@@ -41,8 +41,8 @@ export function isJsonRecord(value: unknown): value is JsonRecord {
  */
 export function scrubRawSnippet(snippet: string): string {
   return snippet
-    .replace(/Bearer\s+[A-Za-z0-9\-._~+/=]{8,}/g, "Bearer [REDACTED]")
-    .replace(/sk-[A-Za-z0-9]{8,}/g, "sk-[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9\-._~+/=]{8,}/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9][A-Za-z0-9\-._]{7,}/g, "sk-[REDACTED]")
     .replace(/([?&](?:token|api_key|apikey|access_token|secret|key)=)[^&\s"'<>]{4,}/gi, "$1[REDACTED]");
 }
 
@@ -156,7 +156,7 @@ export async function parseNonStreamingResponseBody(opts: {
       normalizedProviderPayload,
     };
   } catch (err) {
-    const detailedError = `Invalid JSON response from provider (error: ${err instanceof Error ? err.message : String(err)}): ${rawBody.substring(0, 1000)}`;
+    const detailedError = `Invalid JSON response from provider (error: ${err instanceof Error ? err.message : String(err)}): ${scrubRawSnippet(rawBody.substring(0, 1000))}`;
     const invalidJsonMessage = "Invalid JSON response from provider";
     return {
       kind: "invalid_json",
