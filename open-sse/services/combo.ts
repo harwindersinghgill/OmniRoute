@@ -203,6 +203,7 @@ import {
   isStreamEarlyEofErrorBody,
   isTokenLimitBreachErrorBody,
   isLocalQueueCapacityErrorBody,
+  isUpstreamTimeoutErrorBody,
   toRecordedTarget,
   getExhaustedTargetSkipReason,
   clampPercent,
@@ -2262,10 +2263,22 @@ async function handleComboChatInner({
 
           // Check if this is a transient error worth retrying on same model.
           // A token-limit 429 is terminal for the client — never retry it.
+          // Edge-deadline hardening (CF-125s): our own 90s attempt ceiling
+          // (executeWithUpstreamAttemptTimeout → body code "UPSTREAM_TIMEOUT") means
+          // this target already burned most of the 125s edge budget — same-model
+          // retries cannot win. Non-transient → falls through to "trying next".
+          const isUpstreamTimeout = isUpstreamTimeoutErrorBody(errorBody);
+          if (isUpstreamTimeout) {
+            log.warn(
+              "COMBO",
+              `UPSTREAM_TIMEOUT — advancing to next target, no same-model retry (${modelStr})`
+            );
+          }
           const isTransient =
             !isStreamReadinessFailure &&
             !isTokenLimitBreach &&
             !scopedFailure &&
+            !isUpstreamTimeout &&
             [408, 429, 500, 502, 503, 504].includes(result.status);
           // failoverBeforeRetry means what it says: prefer the next sibling
           // target over hammering this one again. Without this check, a
@@ -3671,10 +3684,20 @@ async function handleRoundRobinCombo({
 
           // Transient error → retry same model.
           // A token-limit 429 is terminal for the client — never retry it.
+          // Edge-deadline hardening (CF-125s): no same-model retry after our own
+          // 90s attempt ceiling — the 125s edge budget is spent; advances to next target.
+          const isUpstreamTimeout = isUpstreamTimeoutErrorBody(errorBody);
+          if (isUpstreamTimeout) {
+            log.warn(
+              "COMBO-RR",
+              `UPSTREAM_TIMEOUT — advancing to next target, no same-model retry (${modelStr})`
+            );
+          }
           const isTransient =
             !isStreamReadinessFailure &&
             !isTokenLimitBreach &&
             !scopedFailure &&
+            !isUpstreamTimeout &&
             [408, 429, 500, 502, 503, 504].includes(result.status);
           // See the same guard's comment in the "auto" strategy loop above —
           // failoverBeforeRetry must prevent this same-model retry too, not

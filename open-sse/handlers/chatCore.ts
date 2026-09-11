@@ -353,6 +353,7 @@ import {
   executeWithUpstreamStartTimeout,
   resolveConnectionTimeoutMs,
 } from "./chatCore/upstreamTimeouts.ts";
+import { executeWithUpstreamAttemptTimeout } from "./chatCore/upstreamAttemptTimeout.ts";
 import { getModelNormalizeToolCallId, getModelPreserveOpenAIDeveloperRole } from "@/lib/db/models";
 import { getProviderCredentials, extractSessionAffinityKey } from "@/sse/services/auth";
 import { assertExclusiveConnectionLeaseFence } from "@/lib/db/exclusiveConnectionLeases";
@@ -3085,36 +3086,43 @@ export async function handleChatCore({
                     stage: "rate_limit_slot_acquired",
                   });
                   assertManagedLeaseFence(attemptConnectionId);
-                  return executeWithUpstreamStartTimeout({
-                    executor,
+                  return executeWithUpstreamAttemptTimeout({
                     provider,
                     model: modelToCall,
-                    connectionTimeoutMs: resolveConnectionTimeoutMs(
-                      execCreds?.providerSpecificData
-                    ),
                     signal: streamController.signal,
                     log,
                     execute: (signal) =>
-                      runWithCapture(providerRequestCapture, () =>
-                        executor.execute({
-                          model: modelToCall,
-                          body: bodyToSend,
-                          stream: upstreamStream,
-                          credentials: execCreds,
-                          signal,
-                          log,
-                          extendedContext,
-                          upstreamExtraHeaders: buildUpstreamHeadersForExecute(modelToCall),
-                          clientHeaders: buildExecutorClientHeaders(
-                            clientRawRequest?.headers,
-                            userAgent
+                      executeWithUpstreamStartTimeout({
+                        executor,
+                        provider,
+                        model: modelToCall,
+                        connectionTimeoutMs: resolveConnectionTimeoutMs(
+                          execCreds?.providerSpecificData
+                        ),
+                        signal,
+                        log,
+                        execute: (innerSignal) =>
+                          runWithCapture(providerRequestCapture, () =>
+                            executor.execute({
+                              model: modelToCall,
+                              body: bodyToSend,
+                              stream: upstreamStream,
+                              credentials: execCreds,
+                              signal: innerSignal,
+                              log,
+                              extendedContext,
+                              upstreamExtraHeaders: buildUpstreamHeadersForExecute(modelToCall),
+                              clientHeaders: buildExecutorClientHeaders(
+                                clientRawRequest?.headers,
+                                userAgent
+                              ),
+                              clientResponseFormat,
+                              onCredentialsRefreshed,
+                              skipUpstreamRetry,
+                              contextEditing: { enabled: contextEditingEnabled },
+                            })
                           ),
-                          clientResponseFormat,
-                          onCredentialsRefreshed,
-                          skipUpstreamRetry,
-                          contextEditing: { enabled: contextEditingEnabled },
-                        })
-                      ),
+                      }),
                   });
                 },
                 streamController.signal

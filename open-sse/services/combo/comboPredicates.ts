@@ -413,6 +413,21 @@ export function isLocalQueueCapacityErrorBody(errorBody: unknown): boolean {
   );
 }
 
+/**
+ * Edge-deadline hardening (CF-125s): our own per-attempt timeout surfaces as a
+ * 502/504 whose body carries code "UPSTREAM_TIMEOUT" (thrown by
+ * executeWithUpstreamAttemptTimeout, threaded through chatCore's structured
+ * error handler into body.error.code). combo.ts must NOT retry the same model
+ * after our own deadline ceiling — the 125s edge budget is spent; fall through
+ * to the cross-provider fallback instead.
+ */
+export function isUpstreamTimeoutErrorBody(errorBody: unknown): boolean {
+  if (!errorBody || typeof errorBody !== "object") return false;
+  const error = (errorBody as Record<string, unknown>).error;
+  if (!error || typeof error !== "object") return false;
+  return (error as Record<string, unknown>).code === "UPSTREAM_TIMEOUT";
+}
+
 export function toRecordedTarget(target: ResolvedComboTarget) {
   return {
     executionKey: target.executionKey,
