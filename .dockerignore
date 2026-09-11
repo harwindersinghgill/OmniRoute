@@ -15,7 +15,7 @@
 node_modules
 **/node_modules
 .next
-.build
+#.build   # host-prebuilt thin artifacts flow (runner-from-artifacts COPY) — FIX-3a re-applied for v3.8.50; the thin stage COPYs .build/next/standalone + .build/next/static from the build context
 out
 build
 dist
