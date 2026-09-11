@@ -50,7 +50,7 @@ services:
         condition: service_started
     build:
       context: .
-      target: runner-cli
+      target: runner-from-artifacts
       args:
         OMNIROUTE_BASE_PATH: ${OMNIROUTE_BASE_PATH:-}
     image: omniroute:prod

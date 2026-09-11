@@ -338,3 +338,31 @@ RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,targe
   npm install -g --no-audit --no-fund @openai/codex @anthropic-ai/claude-code droid openclaw@latest
 
 USER node
+
+# ── Thin runner from host-compiled artifacts (VPS deployment stage) ──────────
+# The host runs build-standalone-host.sh to produce .build/next/standalone
+# (avoids in-container webpack OOM). This thin stage COPYs that artifact from
+# the host build context — no in-container compilation. Re-appended for the
+# v3.8.50 upgrade: upstream's runner-base does a full COPY --from=builder
+# (in-docker build, OOM-prone here); our compose targets runner-from-artifacts.
+# Stage re-derived from the v3.8.48-era stage, adapted to the v3.8.50 runtime
+# env (OMNIROUTE_MEMORY_MB heap ceiling, OMNIROUTE_MIGRATIONS_DIR, DATA_DIR).
+FROM base AS runner-from-artifacts
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=20128
+ENV HOSTNAME=0.0.0.0
+ENV OMNIROUTE_MEMORY_MB=1024
+ENV NODE_OPTIONS="--max-old-space-size=${OMNIROUTE_MEMORY_MB}"
+ENV DATA_DIR=/app/data
+WORKDIR /app
+RUN mkdir -p /app/data && chown -R node:node /app/data
+COPY --chown=node:node public ./public
+COPY --chown=node:node .build/next/standalone ./
+COPY --chown=node:node .build/next/static ./.build/next/static
+# Migrations land at <standalone>/migrations via assembleStandalone; point the
+# runtime at them (v3.8.50 runner-base behavior, needed by bootstrap-env).
+ENV OMNIROUTE_MIGRATIONS_DIR=/app/migrations
+USER node
+EXPOSE 20128
+CMD ["node", "server.js"]
