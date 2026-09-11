@@ -54,6 +54,13 @@ export type NonStreamingParseResult =
       detailedError: string;
       looksLikeSSE: false;
       normalizedProviderPayload: unknown;
+      /**
+       * Bounded raw upstream snippet (first 2000 chars of the raw body) so
+       * operators can see what the upstream actually returned when it sends
+       * a non-JSON error page (e.g. Cloudflare HTML). 2026-09-11 incident:
+       * "Invalid error response format" swallowed this evidence.
+       */
+      rawSnippet: string;
     };
 
 export async function parseNonStreamingResponseBody(opts: {
@@ -145,6 +152,7 @@ export async function parseNonStreamingResponseBody(opts: {
       detailedError,
       looksLikeSSE: false,
       normalizedProviderPayload,
+      rawSnippet: rawBody.substring(0, 2000),
     };
   }
 }

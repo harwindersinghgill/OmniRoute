@@ -42,6 +42,12 @@ export type PersistAttemptLogsArgs = {
   providerRequest?: unknown;
   providerResponse?: unknown;
   clientResponse?: unknown;
+  /**
+   * Bounded raw upstream snippet (≤2000 chars) for invalid-payload failures.
+   * Persisted alongside the normalized providerResponse so operators can see
+   * what the upstream actually returned. 2026-09-11 incident.
+   */
+  upstreamRawSnippet?: string;
   claudeCacheMeta?: Record<string, unknown>;
   claudeCacheUsageMeta?: Record<string, unknown>;
   cacheSource?: "upstream" | "semantic";
@@ -162,6 +168,7 @@ export function persistAttemptLogs(args: PersistAttemptLogsArgs, ctx: PersistAtt
     error,
     providerRequest,
     providerResponse,
+    upstreamRawSnippet,
     clientResponse,
     claudeCacheMeta,
     claudeCacheUsageMeta,
@@ -233,6 +240,16 @@ export function persistAttemptLogs(args: PersistAttemptLogsArgs, ctx: PersistAtt
     }
     if (providerResponse !== undefined && !pipelinePayloads.providerResponse) {
       pipelinePayloads.providerResponse = providerResponse as Record<string, unknown>;
+    }
+    if (
+      typeof upstreamRawSnippet === "string" &&
+      upstreamRawSnippet.length > 0 &&
+      pipelinePayloads.providerResponse &&
+      typeof pipelinePayloads.providerResponse === "object" &&
+      !("upstreamRawSnippet" in (pipelinePayloads.providerResponse as Record<string, unknown>))
+    ) {
+      (pipelinePayloads.providerResponse as Record<string, unknown>).upstreamRawSnippet =
+        upstreamRawSnippet;
     }
     if (clientResponse !== undefined) {
       pipelinePayloads.clientResponse = clientResponse as Record<string, unknown>;

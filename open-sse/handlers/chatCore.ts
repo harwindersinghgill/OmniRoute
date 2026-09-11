@@ -4689,6 +4689,7 @@ export async function handleChatCore({
         error: detailedError,
         providerRequest: finalBody || translatedBody,
         providerResponse: normalizedProviderPayload,
+        upstreamRawSnippet: parsed.rawSnippet,
         clientResponse: buildErrorBody(HTTP_STATUS.BAD_GATEWAY, invalidJsonMessage),
         cacheSource: "upstream",
       });
