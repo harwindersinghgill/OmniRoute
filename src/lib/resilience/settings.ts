@@ -3,6 +3,7 @@ import {
   PROVIDER_PROFILES,
   STREAM_THROUGHPUT_WATCHDOG,
 } from "@omniroute/open-sse/config/constants";
+import { EDGE_QUEUE_WAIT_MAX_MS } from "@omniroute/open-sse/utils/edgeDeadline";
 
 import type { JsonRecord, ResilienceSettings, ResilienceSettingsPatch } from "./settings/types";
 import {
@@ -42,7 +43,12 @@ export type {
 
 export const DEFAULT_REQUEST_QUEUE_MAX_WAIT_MS = (() => {
   const parsed = Number(process.env.RATE_LIMIT_MAX_WAIT_MS || "15000");
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 15000;
+  // Edge-deadline hardening (CF-125s): the env-derived default is clamped to
+  // EDGE_QUEUE_WAIT_MAX_MS like every other maxWaitMs path — an operator
+  // setting RATE_LIMIT_MAX_WAIT_MS=86400000 must not silently reopen the
+  // 524 window (security audit LOW #2).
+  const clamped = Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 15000;
+  return Math.min(clamped, EDGE_QUEUE_WAIT_MAX_MS);
 })();
 
 // Issue #6593: opt-in admission cap on the local rate-limit queue depth.
