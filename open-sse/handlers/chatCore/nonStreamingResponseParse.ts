@@ -34,6 +34,18 @@ export function isJsonRecord(value: unknown): value is JsonRecord {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * Scrub likely secrets from a free-text upstream snippet before persistence.
+ * Key-based redaction (redactPayload) does not cover reflected tokens inside
+ * HTML/text error pages. Bounded, non-overlapping patterns (no ReDoS risk).
+ */
+export function scrubRawSnippet(snippet: string): string {
+  return snippet
+    .replace(/Bearer\s+[A-Za-z0-9\-._~+/=]{8,}/g, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9]{8,}/g, "sk-[REDACTED]")
+    .replace(/([?&](?:token|api_key|apikey|access_token|secret|key)=)[^&\s"'<>]{4,}/gi, "$1[REDACTED]");
+}
+
 export type NonStreamingParseResult =
   | {
       kind: "ok";
@@ -152,7 +164,9 @@ export async function parseNonStreamingResponseBody(opts: {
       detailedError,
       looksLikeSSE: false,
       normalizedProviderPayload,
-      rawSnippet: rawBody.substring(0, 2000),
+      // Scrubbed: hostile error pages can reflect secrets (?token=, Bearer,
+      // sk- keys). Key-based redaction does not cover free-text snippets.
+      rawSnippet: scrubRawSnippet(rawBody.substring(0, 2000)),
     };
   }
 }

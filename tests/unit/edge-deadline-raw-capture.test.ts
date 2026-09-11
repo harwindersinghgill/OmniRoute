@@ -54,7 +54,7 @@ test("rawSnippet truncates to 2000 chars on long bodies", async () => {
   assert.equal(res.rawSnippet.length, 2000);
 });
 
-test("redaction applies: secrets in raw JSON body are masked via normalizePayloadForLog path", async () => {
+test("short bodies pass through intact with normalized payload present", async () => {
   const res = await parseNonStreamingResponseBody({
     ...baseOpts,
     providerResponse: makeResponse("{not json", "application/json"),
@@ -63,4 +63,17 @@ test("redaction applies: secrets in raw JSON body are masked via normalizePayloa
   if (res.kind !== "invalid_json") return;
   assert.equal(res.rawSnippet, "{not json");
   assert.ok("normalizedProviderPayload" in res);
+});
+
+test("reflected secrets in error pages are scrubbed", async () => {
+  const { scrubRawSnippet } = await import(
+    "../../open-sse/handlers/chatCore/nonStreamingResponseParse.ts"
+  );
+  const dirty =
+    '<html>Error <a href="https://x/?token=abc123secret">retry</a> Bearer tokengoeshere123 key=sk-abcdef1234567890</html>';
+  const clean = scrubRawSnippet(dirty);
+  assert.ok(!clean.includes("abc123secret"), "query token scrubbed");
+  assert.ok(!clean.includes("tokengoeshere123"), "bearer scrubbed");
+  assert.ok(!clean.includes("sk-abcdef1234567890"), "sk- scrubbed");
+  assert.ok(clean.includes("[REDACTED]"), "redaction marker present");
 });

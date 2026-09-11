@@ -153,7 +153,8 @@ function parseCooldownUntilMs(value: string | number | null | undefined): number
  * A connection's `rate_limited_until` may have been pushed far into the
  * future by exponential back-off.  On next startup that leaves all affected
  * connections excluded by `getProviderCredentials()`, so every request sits
- * in the Bottleneck queue and times out at `maxWaitMs` (120 s default).
+ * in the Bottleneck queue and times out at `maxWaitMs` (edge-clamped to
+ * 90 s since 2026-09-11; was 120 s default).
  *
  * Safe invariants:
  *  - Only connections with `rate_limited_until IS NOT NULL` are touched.

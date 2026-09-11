@@ -296,7 +296,8 @@ export async function registerNodejs(): Promise<void> {
   // Clear stale transient connection cooldowns persisted from an unclean crash.
   // A crash mid-burst can leave far-future `rate_limited_until` values in the DB
   // that cause every connection to be skipped by getProviderCredentials(), making
-  // all subsequent requests time out at Bottleneck's maxWaitMs (120 s default).
+  // all subsequent requests time out at Bottleneck's maxWaitMs (edge-clamped
+  // to 90 s since 2026-09-11; was 120 s default).
   // Terminal states (banned / expired / credits_exhausted) are intentionally kept.
   // See: https://github.com/diegosouzapw/OmniRoute/issues/3625 (Part A)
   try {

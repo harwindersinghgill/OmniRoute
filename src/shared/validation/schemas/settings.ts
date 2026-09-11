@@ -12,6 +12,7 @@ import {
 } from "@/shared/constants/upstreamHeaders";
 import { MAX_TIMER_TIMEOUT_MS } from "@/shared/utils/runtimeTimeouts";
 import { AUTO_DISABLE_BANNED_SCOPES } from "@/shared/utils/autoDisableBanned";
+import { EDGE_QUEUE_WAIT_MAX_MS } from "@omniroute/open-sse/utils/edgeDeadline";
 
 // Single source of truth: ../settingsSchemas (the schema the runtime settings route validates
 // against). Re-exported here so this modular barrel stays in exact lockstep — a divergent local
@@ -41,13 +42,17 @@ export const requestQueueSettingsSchema = z
     requestsPerMinute: z.number().int().min(1).optional(),
     minTimeBetweenRequestsMs: z.number().int().min(0).optional(),
     concurrentRequests: z.number().int().min(1).optional(),
+    // Edge-deadline reject (2026-09-11 incident): PATCH traffic is validated
+    // here, so out-of-range values fail fast with 400. Stored/legacy values
+    // bypass this schema and are clamped (not rejected) in
+    // normalizeRequestQueueSettings — availability-preserving for existing
+    // operator settings. Both layers share EDGE_QUEUE_WAIT_MAX_MS.
     maxWaitMs: z
       .number()
       .int()
       .min(1)
-      .max(90000, {
-        message:
-          "maxWaitMs must be ≤ 90000: queue wait + upstream execution must fit under Cloudflare's 125s Proxy Read Timeout (2026-09-11 incident)",
+      .max(EDGE_QUEUE_WAIT_MAX_MS, {
+        message: `maxWaitMs must be ≤ ${EDGE_QUEUE_WAIT_MAX_MS}: queue wait + upstream execution must fit under Cloudflare's 125s Proxy Read Timeout (2026-09-11 incident)`,
       })
       .optional(),
     maxQueueDepth: z.number().int().min(0).max(100_000).optional(),
