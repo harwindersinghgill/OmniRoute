@@ -1,5 +1,5 @@
 import { EDGE_UPSTREAM_ATTEMPT_MAX_MS } from "../../utils/edgeDeadline.ts";
-import { computeAttemptTimeoutMs } from "../../utils/requestDeadline.ts";
+import { computeAttemptTimeoutMs, getRemainingBudgetMs } from "../../utils/requestDeadline.ts";
 import { createAbortError } from "./upstreamTimeouts.ts";
 
 export function createUpstreamAttemptTimeoutError(
@@ -42,8 +42,17 @@ export async function executeWithUpstreamAttemptTimeout<T>({
   log,
   execute,
 }: UpstreamAttemptTimeoutDeps): Promise<T> {
-  if (timeoutMs <= 0) return execute(signal);
   if (signal.aborted) throw createAbortError(signal);
+  // Distinguish "timeout disabled" (no deadline context — static cap fallback)
+  // from "deadline exhausted" (ALS context exists, budget fully consumed by
+  // pre-attempt stages). The latter must NOT pass through unbounded — that
+  // silently reopens the 524 window in exactly the overloaded-queue scenario
+  // this ceiling exists to prevent. Reject immediately with UPSTREAM_TIMEOUT so
+  // combo advances to the next target (Loop 1 finding #1).
+  if (timeoutMs <= 0) {
+    if (getRemainingBudgetMs() === null) return execute(signal);
+    throw createUpstreamAttemptTimeoutError(0, provider, model);
+  }
 
   const timeoutError = createUpstreamAttemptTimeoutError(timeoutMs, provider, model);
   const timeoutController = new AbortController();

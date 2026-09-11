@@ -87,3 +87,37 @@ test("integration: attempt wrapper outside deadline context keeps static cap", a
   assert.equal(computeAttemptTimeoutMs(), EDGE_UPSTREAM_ATTEMPT_MAX_MS);
 });
 
+test("expired deadline rejects with UPSTREAM_TIMEOUT, never unbounded passthrough", async () => {
+  await runWithRequestDeadline(async () => {
+    // Exhaust the 110s clock without waiting: timeoutMs=0 + active context.
+    await assert.rejects(
+      () =>
+        executeWithUpstreamAttemptTimeout({
+          provider: "test",
+          model: "m",
+          signal: new AbortController().signal,
+          timeoutMs: 0,
+          execute: async () => {
+            // Must never run — an expired budget must not launch a request.
+            throw new Error("EXECUTE-MUST-NOT-RUN");
+          },
+        }),
+      (err: NodeJS.ErrnoException) => {
+        const e = err as unknown as { code?: string; name?: string };
+        return e.code === "UPSTREAM_TIMEOUT" && e.name === "TimeoutError";
+      }
+    );
+  });
+});
+
+test("timeoutMs=0 with NO deadline context still passes through (disabled)", async () => {
+  const result = await executeWithUpstreamAttemptTimeout({
+    provider: "test",
+    model: "m",
+    signal: new AbortController().signal,
+    timeoutMs: 0,
+    execute: async () => "passthrough-ok",
+  });
+  assert.equal(result, "passthrough-ok");
+});
+

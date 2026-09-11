@@ -347,6 +347,12 @@ USER node
 # (in-docker build, OOM-prone here); our compose targets runner-from-artifacts.
 # Stage re-derived from the v3.8.48-era stage, adapted to the v3.8.50 runtime
 # env (OMNIROUTE_MEMORY_MB heap ceiling, OMNIROUTE_MIGRATIONS_DIR, DATA_DIR).
+#
+# FROM base (not runner-cli) is INTENTIONAL and matches our deployed v3.8.48
+# stage exactly: the thin image has never carried the CLI-provider toolchain
+# (@openai/codex, claude-code, droid, openclaw). Prod serves only API-key/OAuth
+# HTTP providers. If a CLI-based provider is ever enabled in prod, re-base this
+# stage on the runner-cli lineage instead.
 FROM base AS runner-from-artifacts
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
