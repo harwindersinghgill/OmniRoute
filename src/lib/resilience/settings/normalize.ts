@@ -9,6 +9,7 @@
  */
 
 import { resolveFeatureFlag } from "@/shared/utils/featureFlags";
+import { EDGE_QUEUE_WAIT_MAX_MS } from "@omniroute/open-sse/utils/edgeDeadline";
 import type {
   JsonRecord,
   RequestQueueSettings,
@@ -124,9 +125,14 @@ export function normalizeRequestQueueSettings(
     min: 1,
     max: 10_000,
   });
+  // Edge-deadline clamp (2026-09-11 incident): queue wait + upstream
+  // execution must fit under Cloudflare's 125s Proxy Read Timeout, or queued
+  // requests die as 524s while the origin keeps burning compute. Values above
+  // the ceiling are clamped, not rejected, so existing operator settings
+  // degrade to safe instead of failing validation.
   const maxWaitMs = toInteger(record.maxWaitMs, fallback.maxWaitMs, {
     min: 1,
-    max: 24 * 60 * 60 * 1000,
+    max: EDGE_QUEUE_WAIT_MAX_MS,
   });
   const maxQueueDepth = toInteger(record.maxQueueDepth, fallback.maxQueueDepth, {
     min: 0,
