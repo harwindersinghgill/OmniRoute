@@ -67,6 +67,7 @@ import {
   buildSubscriptionQuotaFallback,
   buildWeeklyQuotaFallback,
   buildSessionQuotaFallback,
+  buildDailyQuotaResetFallback,
 } from "./quotaTextCooldowns.ts";
 import { parseDayGranularityResetMs, shouldPreserveQuotaSignals } from "./quotaResetParsing.ts";
 import { evictLockoutOverflow } from "./accountFallback/lockoutEviction.ts";
@@ -1759,6 +1760,17 @@ export function checkFallbackError(
     // gate.
     const sessionResult = buildSessionQuotaFallback(errorStr);
     if (sessionResult) return sessionResult;
+
+    // CF-125s Task 6b: LongCat-style daily free-tier 429s ("You've used all
+    // 100 free LongCat 2.0 requests for today. Your quota resets at <ISO>.")
+    // match none of the quota-keyword classifiers, so they fell through to
+    // the generic short backoff and kept retrying an exhausted daily pool.
+    // Cool the connection until the stated reset via the existing
+    // rateLimitedUntil mechanism (no new state). Ungated like the weekly
+    // check — LongCat is apikey-category, excluded by the oauth-only
+    // shouldUseQuotaSignal gate.
+    const dailyQuotaResult = buildDailyQuotaResetFallback(errorStr, Date.now());
+    if (dailyQuotaResult) return dailyQuotaResult;
 
     const quotaResetHintMs = parseRetryFromErrorText(errorStr);
     if (

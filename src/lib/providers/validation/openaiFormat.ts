@@ -99,6 +99,19 @@ export async function validateOpenAILikeProvider({
     }
 
     if (response.status === 401) {
+      // CF-125s Task 6b (opencode-go hygiene): opencode.ai answers a request
+      // without a usable key with 401 "Missing API key" — distinct from a
+      // WRONG key. Surface that wording so the operator checks the connection
+      // configuration instead of assuming a bad key. Body-phrase match,
+      // provider-generic.
+      const unauthorizedBody = await response.text().catch(() => "");
+      if (/missing api key/i.test(unauthorizedBody)) {
+        return {
+          valid: false,
+          error:
+            "Upstream reports missing API key — verify the key is configured and saved on this connection",
+        };
+      }
       return { valid: false, error: "Invalid API key" };
     }
 

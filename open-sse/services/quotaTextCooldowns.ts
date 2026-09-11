@@ -157,3 +157,62 @@ export function buildSessionQuotaFallback(errorStr: string): QuotaTextFallback |
     reason: RateLimitReason.QUOTA_EXHAUSTED,
   };
 }
+
+// ─── CF-125s Task 6b — daily-quota reset-timestamp pre-emption ─────────────
+//
+// LongCat free tier 429s with "You've used all 100 free LongCat 2.0 requests
+// for today. Your quota resets at <ISO>." None of the quota-keyword
+// classifiers above match that wording, so it fell through to the generic 429
+// backoff and kept hammering an exhausted daily pool. parseDailyQuotaReset
+// extracts the upstream's own reset timestamp so the cooldown can run exactly
+// until the quota actually resets (wired via the existing quotaResetHintMs /
+// rateLimitedUntil mechanism — no new state).
+
+const DAILY_QUOTA_RESET_RE =
+  /\bquota resets? at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))/i;
+
+/**
+ * Parse an absolute daily-quota reset timestamp out of a provider error
+ * message. Returns the matched ISO string, or undefined when the message
+ * carries no reset hint (or `message` is not a string).
+ */
+export function parseDailyQuotaReset(message: unknown): string | undefined {
+  if (typeof message !== "string") return undefined;
+  const match = DAILY_QUOTA_RESET_RE.exec(message);
+  return match?.[1] ?? undefined;
+}
+
+/**
+ * True when the error text reads as a daily free-tier quota exhaustion that
+ * parseDailyQuotaReset can act on ("used all ... requests for today" +
+ * a parseable reset). Kept specific so transient per-minute 429s that merely
+ * mention "today" are not misclassified.
+ */
+export function isDailyQuotaResetText(lower: string): boolean {
+  return lower.includes("requests for today");
+}
+
+/**
+ * Build the QUOTA_EXHAUSTED fallback for a daily-quota 429 whose message
+ * embeds its own reset timestamp. Cooldown = time until that reset (min 1min,
+ * max 24h cap like the other daily-quota paths). Returns null when the
+ * message has no parseable reset — callers fall through.
+ */
+export function buildDailyQuotaResetFallback(errorStr: string, nowMs: number): QuotaTextFallback | null {
+  const resetIso = parseDailyQuotaReset(errorStr);
+  if (!resetIso || !isDailyQuotaResetText(errorStr.toLowerCase())) return null;
+  const resetMs = Date.parse(resetIso);
+  if (!Number.isFinite(resetMs)) return null;
+  const waitMs = resetMs - nowMs;
+  // Past/now reset or sub-minute window → not worth pre-empting; caller falls
+  // through to the generic 429 backoff which handles sub-minute waits fine.
+  if (waitMs < 60 * 1000) return null;
+  const MAX_DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  return {
+    shouldFallback: true,
+    cooldownMs: Math.min(waitMs, MAX_DAILY_COOLDOWN_MS),
+    reason: RateLimitReason.QUOTA_EXHAUSTED,
+    usedUpstreamRetryHint: false,
+    quotaResetHintMs: Math.min(waitMs, MAX_DAILY_COOLDOWN_MS),
+  };
+}

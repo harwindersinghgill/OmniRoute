@@ -7,6 +7,12 @@ import {
   type ResilienceSettings,
   type ResilienceSettingsPatch,
 } from "@/lib/resilience/settings";
+import { diffResilience } from "@/lib/resilience/settings/diff";
+import { getAuditRequestContext, logAuditEvent } from "@/lib/compliance";
+import { isDashboardSessionAuthenticated } from "@/shared/utils/apiAuth";
+import { isCliTokenAuthValid } from "@/lib/middleware/cliTokenAuth";
+import { extractApiKey } from "@/sse/services/auth";
+import { getApiKeyMetadata } from "@/lib/db/apiKeys";
 import { updateResilienceSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { resetAllCircuitBreakers } from "@/shared/utils/circuitBreaker";
@@ -20,6 +26,36 @@ function asRecord(value: unknown): JsonRecord {
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return sanitizeErrorMessage(error) || fallback;
+}
+
+/**
+ * Derive an audit actor string from the inbound request — same precedence as
+ * settings/route.ts::deriveAuditActor ("dashboard" / "cli" / "apikey:<id>" /
+ * "anonymous"). Best effort; lookup errors degrade to "unknown" so the audit
+ * row still carries actor context.
+ */
+async function deriveResilienceAuditActor(request: Request): Promise<string> {
+  try {
+    if (await isDashboardSessionAuthenticated(request)) return "dashboard";
+  } catch {
+    /* fall through */
+  }
+  try {
+    if (await isCliTokenAuthValid(request)) return "cli";
+  } catch {
+    /* fall through */
+  }
+  try {
+    const apiKey = extractApiKey(request);
+    if (apiKey) {
+      const meta = await getApiKeyMetadata(apiKey);
+      if (meta?.id) return `apikey:${meta.id}`;
+      return "apikey:unknown";
+    }
+  } catch {
+    return "unknown";
+  }
+  return "anonymous";
 }
 
 function normalizeLegacyPatch(body: JsonRecord): ResilienceSettingsPatch {
@@ -230,6 +266,23 @@ export async function PATCH(request) {
       maxRetryIntervalSec: nextResilience.waitForCooldown.maxRetryWaitSec,
     });
     await syncRuntimeSettings(nextResilience);
+
+    // CF-125s Task 6a: audit every successful resilience settings write with a
+    // per-section diff (changed sections only — no row when nothing changed).
+    const resilienceDiff = diffResilience(currentResilience, nextResilience);
+    if (Object.keys(resilienceDiff).length > 0) {
+      const { ipAddress, requestId } = getAuditRequestContext(request);
+      logAuditEvent({
+        action: "settings.update",
+        actor: await deriveResilienceAuditActor(request),
+        target: "resilienceSettings",
+        resourceType: "settings",
+        status: "success",
+        ipAddress: ipAddress || undefined,
+        requestId: requestId || undefined,
+        details: { diff: resilienceDiff },
+      });
+    }
 
     // Issue #2100 follow-up: detect transitions in useUpstream429BreakerHints
     // and reset breakers so the registry stops serving cached options.
