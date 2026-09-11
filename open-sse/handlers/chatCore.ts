@@ -354,6 +354,7 @@ import {
   resolveConnectionTimeoutMs,
 } from "./chatCore/upstreamTimeouts.ts";
 import { executeWithUpstreamAttemptTimeout } from "./chatCore/upstreamAttemptTimeout.ts";
+import { runWithRequestDeadline } from "../utils/requestDeadline.ts";
 import { getModelNormalizeToolCallId, getModelPreserveOpenAIDeveloperRole } from "@/lib/db/models";
 import { getProviderCredentials, extractSessionAffinityKey } from "@/sse/services/auth";
 import { assertExclusiveConnectionLeaseFence } from "@/lib/db/exclusiveConnectionLeases";
@@ -495,7 +496,20 @@ type ChatCoreExecutorResult = ReturnType<typeof normalizeExecutorResult> & {
  */
 // extractSystemRoleMessages extracted to chatCore/claudeSystemRole.ts (#3501); re-exported above so
 // existing importers (e.g. tests/unit/system-role-extraction.test.ts) keep resolving it from here.
-export async function handleChatCore({
+/**
+ * Public chatCore entry — stamps the shared per-request deadline clock
+ * (CF-125s "true 110s"): queue wait + attempt must fit under Cloudflare's
+ * 125s Proxy Read Timeout. The inner function sees the deadline via
+ * AsyncLocalStorage; executeWithUpstreamAttemptTimeout reads it to compute
+ * min(90s, remaining). Nested combo calls reuse the OUTERMOST deadline.
+ */
+export async function handleChatCore(
+  ...args: Parameters<typeof handleChatCoreInner>
+): Promise<ReturnType<typeof handleChatCoreInner>> {
+  return runWithRequestDeadline(() => handleChatCoreInner(...args));
+}
+
+async function handleChatCoreInner({
   body,
   modelInfo,
   credentials,

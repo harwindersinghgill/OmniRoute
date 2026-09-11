@@ -1,4 +1,5 @@
 import { EDGE_UPSTREAM_ATTEMPT_MAX_MS } from "../../utils/edgeDeadline.ts";
+import { computeAttemptTimeoutMs } from "../../utils/requestDeadline.ts";
 import { createAbortError } from "./upstreamTimeouts.ts";
 
 export function createUpstreamAttemptTimeoutError(
@@ -18,7 +19,8 @@ export interface UpstreamAttemptTimeoutDeps {
   provider: string;
   model: string;
   signal: AbortSignal;
-  /** Defaults to EDGE_UPSTREAM_ATTEMPT_MAX_MS (90s, under the CF 125s edge cap). */
+  /** Defaults to min(EDGE_UPSTREAM_ATTEMPT_MAX_MS, remaining request deadline) —
+   * 90s static cap outside a deadline context (deployed behavior). */
   timeoutMs?: number;
   log?: { warn?: (tag: string, message: string) => void } | null;
   execute: (signal: AbortSignal) => Promise<unknown>;
@@ -36,7 +38,7 @@ export async function executeWithUpstreamAttemptTimeout<T>({
   provider,
   model,
   signal,
-  timeoutMs = EDGE_UPSTREAM_ATTEMPT_MAX_MS,
+  timeoutMs = computeAttemptTimeoutMs(),
   log,
   execute,
 }: UpstreamAttemptTimeoutDeps): Promise<T> {

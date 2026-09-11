@@ -5,6 +5,7 @@ import {
   getRemainingBudgetMs,
   computeAttemptTimeoutMs,
 } from "../../open-sse/utils/requestDeadline.ts";
+import { executeWithUpstreamAttemptTimeout } from "../../open-sse/handlers/chatCore/upstreamAttemptTimeout.ts";
 import { EDGE_SAFE_BUDGET_MS, EDGE_UPSTREAM_ATTEMPT_MAX_MS } from "../../open-sse/utils/edgeDeadline.ts";
 
 function sleep(ms: number) {
@@ -55,3 +56,34 @@ test("nested runWithRequestDeadline does not extend an outer deadline", async ()
     });
   });
 });
+
+test("integration: attempt wrapper resolves default timeout inside deadline context", async () => {
+  await runWithRequestDeadline(async () => {
+    // Fresh context: remaining ≈ 110s > 90s cap → default resolves to 90000
+    // (computeAttemptTimeoutMs), and a fast execute completes without error.
+    const start = Date.now();
+    const result = await executeWithUpstreamAttemptTimeout({
+      provider: "test",
+      model: "m",
+      signal: new AbortController().signal,
+      execute: async () => "ok",
+    });
+    assert.equal(result, "ok");
+    assert.ok(Date.now() - start < 5000);
+    // And the default the wrapper uses equals the capped value:
+    assert.equal(computeAttemptTimeoutMs(), EDGE_UPSTREAM_ATTEMPT_MAX_MS);
+  });
+});
+
+test("integration: attempt wrapper outside deadline context keeps static cap", async () => {
+  // No runWithRequestDeadline wrapper — graceful degradation to 90s cap.
+  const result = await executeWithUpstreamAttemptTimeout({
+    provider: "test",
+    model: "m",
+    signal: new AbortController().signal,
+    execute: async () => 42,
+  });
+  assert.equal(result, 42);
+  assert.equal(computeAttemptTimeoutMs(), EDGE_UPSTREAM_ATTEMPT_MAX_MS);
+});
+
