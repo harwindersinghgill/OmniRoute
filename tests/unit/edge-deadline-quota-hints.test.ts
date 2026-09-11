@@ -84,14 +84,24 @@ describe("opencode-go 401 validation message (CF-125s hygiene)", () => {
 describe("diffResilience", () => {
   it("returns only changed sections with before/after", () => {
     const before: ResilienceSettings = DEFAULT_RESILIENCE_SETTINGS;
+    // v3.8.50: waitForCooldown.maxRetries defaults to 5, so mutate a different
+    // field to guarantee a real delta regardless of upstream default drift.
     const after: ResilienceSettings = {
       ...DEFAULT_RESILIENCE_SETTINGS,
       requestQueue: { ...DEFAULT_RESILIENCE_SETTINGS.requestQueue, maxWaitMs: 90000 },
-      waitForCooldown: { ...DEFAULT_RESILIENCE_SETTINGS.waitForCooldown, maxRetries: 5 },
+      waitForCooldown: {
+        ...DEFAULT_RESILIENCE_SETTINGS.waitForCooldown,
+        maxRetries: DEFAULT_RESILIENCE_SETTINGS.waitForCooldown.maxRetries === 5 ? 4 : 5,
+      },
     };
     const diff = diffResilience(before, after);
     assert.deepEqual(Object.keys(diff).sort(), ["requestQueue", "waitForCooldown"]);
-    assert.equal(diff.requestQueue.before.maxWaitMs, 120000);
+    // v3.8.50 default is 15000 (was 120000 at v3.8.48) — assert against the
+    // live default so the fixture survives upstream default drift.
+    assert.equal(
+      diff.requestQueue.before.maxWaitMs,
+      DEFAULT_RESILIENCE_SETTINGS.requestQueue.maxWaitMs
+    );
     assert.equal(diff.requestQueue.after.maxWaitMs, 90000);
   });
 
