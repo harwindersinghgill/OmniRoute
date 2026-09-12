@@ -15,13 +15,29 @@ exec > >(tee -a "${LOG}") 2>&1
 
 echo "=== build-standalone-host.sh START $(date -Iseconds) ==="
 
+# Pre-flight disk check (FIX-8, 2026-09-12): the v3.8.50 build needs ~6GB for the
+# standalone artifact plus build-cache headroom; running low caused ENOSPC kill
+# mid-build (three consecutive incidents on 2026-09-11/12). Require 8GB free.
+REQUIRED_FREE_GB=8
+FREE_KB=$(df --output=avail -k / | tail -1 | tr -d ' ')
+FREE_GB=$((FREE_KB / 1024 / 1024))
+if [ "$FREE_GB" -lt "$REQUIRED_FREE_GB" ]; then
+  echo "FAIL: only ${FREE_GB}GB free on / (need ${REQUIRED_FREE_GB}GB)."
+  echo "Reclaim: rm -rf ~/.npm/_cacache .build/next/cache; docker builder prune -f"
+  exit 1
+fi
+echo "Disk pre-flight OK: ${FREE_GB}GB free on /"
+
 # stop to free RAM
 echo "Stopping prod container to free RAM..."
 # sudo docker compose -f /home/processor_user/omniroute/docker-compose.prod.yml stop omniroute-prod || true
 sleep 2
 free -h | head -2
 
-cd /home/admin_user/omniroute
+# FIX-8 (2026-09-12): dynamic cd — works from canonical staging root AND isolated
+# worktrees (script lives at <repo>/infra/scripts/, repo root is two levels up).
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+echo "Building in: $(pwd)"
 
 # Use Node 22 (nvm) to satisfy engine reqs (>=22) and avoid v20 engine warnings + potential extra overhead. 2026-07-10 OOM mitigation for full AC1 host prebuild.
 export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
@@ -64,15 +80,24 @@ echo "Building with FULL profile (standard VM production build)..."
 # Use full output (no early |tail) to avoid SIGPIPE writer deaths; tee for visibility.
 npm run build 2>&1 | tee -a "${LOG}"
 
-STANDALONE="/home/admin_user/omniroute/.build/next/standalone/server.js"
-if [[ -f "${STANDALONE}" ]]; then
+REPO_ROOT="$(pwd)"
+STANDALONE="${REPO_ROOT}/.build/next/standalone/server.js"
+NEXT_MOD="${REPO_ROOT}/.build/next/standalone/node_modules/next/package.json"
+if [[ -f "${STANDALONE}" && -f "${NEXT_MOD}" ]]; then
   echo "SUCCESS: standalone artifact present: ${STANDALONE}"
-  ls -l /home/admin_user/omniroute/.build/next/standalone/ | head -5
+  echo "SUCCESS: standalone node_modules/next present (FIX-3a dockerignore validation)"
+  ls -l "${REPO_ROOT}/.build/next/standalone/" | head -5
   echo "=== build-standalone-host.sh END SUCCESS $(date -Iseconds) ==="
   exit 0
+elif [[ -f "${STANDALONE}" ]]; then
+  echo "FAIL: ${STANDALONE} exists but node_modules/next is missing —"
+  echo "  the build context lost standalone dependencies (dockerignore regression)."
+  echo "  Ensure .dockerignore whitelists .build/next/standalone/node_modules (FIX-3a/3b)."
+  echo "=== build-standalone-host.sh END FAIL $(date -Iseconds) ==="
+  exit 1
 else
   echo "FAIL: ${STANDALONE} not found"
-  find /home/admin_user/omniroute -name 'standalone' -type d 2>/dev/null | head -3 || true
+  find "${REPO_ROOT}" -name 'standalone' -type d 2>/dev/null | head -3 || true
   echo "=== build-standalone-host.sh END FAIL $(date -Iseconds) ==="
   exit 1
 fi

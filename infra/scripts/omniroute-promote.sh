@@ -36,6 +36,22 @@ if [[ ! -f "${PROD}/.build/next/standalone/server.js" ]]; then
   exit 1
 fi
 
+# FIX-8 gate (2026-09-12): standalone node_modules must survive the sync AND the
+# build context. server.js without deps crashes at boot ("Cannot find module
+# 'next'") — the exact FIX-3a/3b regression that broke the v3.8.50 deploy.
+if [[ ! -f "${PROD}/.build/next/standalone/node_modules/next/package.json" ]]; then
+  echo "ERROR: .build/next/standalone/node_modules/next missing in prod —" >&2
+  echo "  promote rsync excludes stripped standalone deps. Fix excludes and re-run." >&2
+  exit 1
+fi
+if grep -qE '^\*\*/node_modules' "${PROD}/.dockerignore" 2>/dev/null; then
+  echo "ERROR: .dockerignore contains bare **/node_modules which strips" >&2
+  echo "  .build/next/standalone/node_modules from the docker build context." >&2
+  echo "  Apply FIX-3b whitelist (!.build/next/standalone/node_modules) first." >&2
+  exit 1
+fi
+echo "Standalone artifact + deps + dockerignore gates OK."
+
 chown -R processor_user:processor_user "${PROD}"
 # Preserve production .env if present
 if [[ -f "${PROD}/.env" ]]; then
