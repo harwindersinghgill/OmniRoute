@@ -12,8 +12,11 @@
 # build context (e.g. @omniroute/opencode-provider/node_modules, ~79 MB of
 # devDependencies). Both forms are kept: the bare one is the documented root
 # rule, the `**/` one covers every nested package.
-node_modules
-**/node_modules
+/node_modules
+open-sse/node_modules
+@omniroute/*/node_modules
+!.build/next/standalone/node_modules
+!.build/next/standalone/node_modules/**
 .next
 #.build   # host-prebuilt thin artifacts flow (runner-from-artifacts COPY) — FIX-3a re-applied for v3.8.50; the thin stage COPYs .build/next/standalone + .build/next/static from the build context
 out
