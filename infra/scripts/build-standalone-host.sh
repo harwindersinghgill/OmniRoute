@@ -21,7 +21,7 @@ echo "Stopping prod container to free RAM..."
 sleep 2
 free -h | head -2
 
-cd /home/admin_user/omniroute/.claude/worktrees/upgrade-v3850
+cd /home/admin_user/omniroute
 
 # Use Node 22 (nvm) to satisfy engine reqs (>=22) and avoid v20 engine warnings + potential extra overhead. 2026-07-10 OOM mitigation for full AC1 host prebuild.
 export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"
