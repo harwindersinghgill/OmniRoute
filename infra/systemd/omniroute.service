@@ -1,0 +1,28 @@
+[Unit]
+Description=OmniRoute AI Gateway (Docker Compose)
+Documentation=file:/home/admin_user/docs/implementation-plans/omniroute_install_2026-07-09.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/processor_user/omniroute
+Environment=COMPOSE_FILE=docker-compose.prod.yml
+# Root invokes compose — processor_user does not have docker socket access (by design).
+ExecStartPre=/usr/bin/docker compose -f docker-compose.prod.yml config --quiet
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d --remove-orphans
+# FIX-6 (2026-07-10): Real health gate. oneshot+RemainAfterExit reports "active(exited)"
+# even when zero containers start. This ExecStartPost polls the dashboard health endpoint
+# until it returns HTTP 200, failing the unit (and surfacing in systemctl status) if the
+# app never becomes healthy within 120s. Compose start_period covers container boot.
+# FIX-3 (2026-07-10): Changed probe from /health (404 — route does not exist) to /login
+# (200 — real server-rendered page, the best unauthenticated liveness signal).
+ExecStartPost=/bin/bash -c 'for i in $(seq 1 24); do code=$(/usr/bin/curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:20130/login 2>/dev/null || echo 000); if [ "$code" = "200" ]; then exit 0; fi; sleep 5; done; echo "omniroute health probe failed: dashboard never returned 200 on /login"; exit 1'
+ExecReload=/usr/bin/docker compose -f docker-compose.prod.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
