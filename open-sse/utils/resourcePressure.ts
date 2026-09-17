@@ -71,7 +71,7 @@ function requireDuration(name: string, value: number): number {
 function formatSignalDetail(signals: ResourceSignals | null): string {
   if (!signals) return "";
   const { cgroup } = signals;
-  return ` cgroup(current=${cgroup.currentBytes}, file=${cgroup.fileBytes}, workingSet=${workingSetBytes(cgroup)}, max=${cgroup.maxBytes}, high=${cgroup.highBytes})`;
+  return ` cgroup(current=${cgroup.currentBytes}, file=${cgroup.fileBytes}, shmem=${cgroup.shmemBytes ?? null}, workingSet=${workingSetBytes(cgroup)}, max=${cgroup.maxBytes}, high=${cgroup.highBytes})`;
 }
 
 function buildCriticalGuard(
@@ -152,6 +152,7 @@ export function createResourcePressureRuntime(
   let inFlight: Promise<void> | null = null;
   let disposed = false;
   let lastStatDegraded = false;
+  let lastStatSkewed = false;
 
   const refresh = (): void => {
     if (disposed || inFlight) return;
@@ -174,6 +175,19 @@ export function createResourcePressureRuntime(
           );
         }
         lastStatDegraded = statDegraded;
+        // Transient read skew (file > current) also forces the raw-ratio
+        // fallback for that sample. It is expected under churn, so warn once
+        // per entry into the skewed state rather than on every sample.
+        const statSkewed =
+          signals.cgroup.currentBytes != null &&
+          signals.cgroup.fileBytes != null &&
+          signals.cgroup.fileBytes > signals.cgroup.currentBytes;
+        if (statSkewed && !lastStatSkewed) {
+          console.warn(
+            "[resourcePressure] cgroup memory.stat file exceeded memory.current (read skew); sample fell back to the raw memory.current ratio"
+          );
+        }
+        lastStatSkewed = statSkewed;
         state = tracker.observe(signals);
         lastRefreshAtMs = settledAtMs;
         nextRefreshAtMs = settledAtMs + staleAfterMs;

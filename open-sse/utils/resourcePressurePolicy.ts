@@ -30,6 +30,7 @@ export type ResourceSignals = {
     maxBytes: ResourceMetricBytes;
     highBytes: ResourceMetricBytes;
     fileBytes: ResourceMetricBytes;
+    shmemBytes?: ResourceMetricBytes;
     events: {
       low: ResourceMetricBytes;
       high: ResourceMetricBytes;
@@ -205,7 +206,13 @@ export function workingSetBytes(cgroup: ResourceSignals["cgroup"]): number | nul
   // and fall back to the raw ratio rather than clamping to 0, which would
   // read as zero pressure and could force a premature recovery.
   if (cgroup.fileBytes > cgroup.currentBytes) return cgroup.currentBytes;
-  return cgroup.currentBytes - cgroup.fileBytes;
+  // cgroup v2 `file` includes tmpfs/shared memory, which is reclaimable only
+  // to swap — not freely. Keep shmem in the working set and subtract only the
+  // reclaimable page-cache portion, otherwise a shmem-heavy container can be
+  // pinned at memory.max while the ratio reads low. shmem unavailable =>
+  // legacy (upstream) behavior.
+  const reclaimableFile = Math.max(0, cgroup.fileBytes - (cgroup.shmemBytes ?? 0));
+  return cgroup.currentBytes - reclaimableFile;
 }
 
 function isRecovered(signals: ResourceSignals, thresholds: ResourcePressureThresholds): boolean {

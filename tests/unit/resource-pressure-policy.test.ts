@@ -288,6 +288,30 @@ describe("resource pressure policy", () => {
     assert.equal(state.reason, "cgroup_high");
   });
 
+  it("keeps swap-backed shmem in the workingset ratio", () => {
+    const tracker = createResourcePressureTracker(fastThresholds);
+    const mk = (cur: number, file: number, shmem: number): ResourceSignals => ({
+      ...baseSignals(),
+      cgroup: {
+        currentBytes: cur,
+        maxBytes: 5 * 1024 ** 3,
+        highBytes: null,
+        fileBytes: file,
+        shmemBytes: shmem,
+        events: { low: 0, high: 0, max: 0, oom: 0, oom_kill: 0 },
+      },
+    });
+    // current 5.2/5 GiB = 96.9%; of the 5.0 GiB `file` charge, 4.9 GiB is
+    // tmpfs/shared memory, reclaimable only to swap. Reclaimable page cache is
+    // therefore 0.1 GiB and the workingset is 5.1 GiB (95%) => critical.
+    // Subtracting the whole file charge (shmem included) would read 3.7% and
+    // mask real pressure — the security-relevant false negative.
+    tracker.observe(mk(5_200_000_000, 5_000_000_000, 4_900_000_000));
+    const state = tracker.observe(mk(5_200_000_000, 5_000_000_000, 4_900_000_000));
+    assert.equal(state.severity, "critical");
+    assert.equal(state.reason, "cgroup_ratio");
+  });
+
   it("keeps snapshot state fields and bounded-cardinality values", () => {
     const tracker = createResourcePressureTracker(fastThresholds);
     const state: ResourcePressureState = tracker.observe(baseSignals());

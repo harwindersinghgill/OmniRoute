@@ -180,11 +180,11 @@ function parsePsiNumber(line: string, name: string): number | null {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
-function parseMemoryStatFileBytes(text: string | null): number | null {
+function parseMemoryStatBytes(text: string | null, key: string): number | null {
   if (!text) return null;
   for (const line of text.split("\n")) {
-    const [key, rawValue] = line.trim().split(/\s+/, 2);
-    if (key !== "file" || rawValue == null) continue;
+    const [lineKey, rawValue] = line.trim().split(/\s+/, 2);
+    if (lineKey !== key || rawValue == null) continue;
     // sanitizeMemoryBytes rejects every falsy magnitude INCLUDING zero, but a
     // zero file cache is a valid reading (workingSetBytes falls back to the
     // raw ratio for it). The zero short-circuit below is coupled to that
@@ -277,7 +277,8 @@ export async function sampleResourceSignals(
       currentBytes: sanitizeMemoryBytes(cgroupFiles.current),
       maxBytes: sanitizeMemoryBytes(cgroupFiles.max),
       highBytes: sanitizeMemoryBytes(cgroupFiles.high),
-      fileBytes: parseMemoryStatFileBytes(cgroupFiles.stat),
+      fileBytes: parseMemoryStatBytes(cgroupFiles.stat, "file"),
+      shmemBytes: parseMemoryStatBytes(cgroupFiles.stat, "shmem"),
       events: parseMemoryEvents(cgroupFiles.events),
     },
     psi: parsePsi(psi),

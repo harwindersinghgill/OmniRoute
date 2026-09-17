@@ -384,4 +384,41 @@ describe("ResourcePressureRuntime stale-while-revalidate cache", () => {
       console.warn = originalWarn;
     }
   });
+
+  it("warns once when memory.stat read skew forces the raw-ratio fallback", async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown) => {
+      warnings.push(String(message));
+    };
+    try {
+      let now = 0;
+      const runtime = createResourcePressureRuntime({
+        nowMs: () => now,
+        staleAfterMs: 10,
+        immediateHeapUsedMb: () => 100,
+        sample: async () => ({
+          ...signals(now),
+          cgroup: {
+            currentBytes: 1_000_000,
+            maxBytes: 1_000_000,
+            highBytes: null,
+            fileBytes: 1_500_000,
+            events: null,
+          },
+        }),
+      });
+
+      runtime.check();
+      await settleRefresh(runtime);
+      now = 11;
+      runtime.check();
+      await settleRefresh(runtime);
+      const skewed = warnings.filter((line) => line.includes("read skew"));
+      assert.equal(skewed.length, 1, "skew warns once per entry, not per sample");
+      runtime.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
 });

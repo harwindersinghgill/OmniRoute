@@ -125,7 +125,7 @@ describe("sampleResourceSignals", () => {
       ["/sys/fs/cgroup/slice/service/memory.events", "low 1\nhigh 2\nmax 3\noom 4\noom_kill 5\n"],
       [
         "/sys/fs/cgroup/slice/service/memory.stat",
-        `anon 268435456\nfile ${300 * MiB}\nkernel_stack 1048576\n`,
+        `anon 268435456\nfile ${300 * MiB}\nshmem ${100 * MiB}\nkernel_stack 1048576\n`,
       ],
       [
         "/proc/pressure/memory",
@@ -156,6 +156,7 @@ describe("sampleResourceSignals", () => {
       maxBytes: GiB,
       highBytes: 966367641,
       fileBytes: 300 * MiB,
+      shmemBytes: 100 * MiB,
       events: { low: 1, high: 2, max: 3, oom: 4, oom_kill: 5 },
     });
     assert.equal(signals.psi?.someAvg10, 1.5);
