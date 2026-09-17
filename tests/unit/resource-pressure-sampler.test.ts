@@ -185,6 +185,7 @@ describe("sampleResourceSignals", () => {
       maxBytes: null,
       highBytes: null,
       fileBytes: null,
+      shmemBytes: null,
       events: null,
     });
     assert.equal(signals.psi, null);
