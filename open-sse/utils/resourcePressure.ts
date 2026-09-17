@@ -3,6 +3,7 @@ import { buildErrorBody } from "./error.ts";
 import {
   createResourcePressureTracker,
   resolveResourcePressureThresholds,
+  workingSetBytes,
   type PressureReason,
   type ResourcePressureState,
   type ResourcePressureThresholds,
@@ -67,9 +68,18 @@ function requireDuration(name: string, value: number): number {
   return value;
 }
 
-function buildCriticalGuard(reason: PressureReason): ResourcePressureGuardResult {
+function formatSignalDetail(signals: ResourceSignals | null): string {
+  if (!signals) return "";
+  const { cgroup } = signals;
+  return ` cgroup(current=${cgroup.currentBytes}, file=${cgroup.fileBytes}, workingSet=${workingSetBytes(cgroup)}, max=${cgroup.maxBytes}, high=${cgroup.highBytes})`;
+}
+
+function buildCriticalGuard(
+  reason: PressureReason,
+  signals: ResourceSignals | null = null
+): ResourcePressureGuardResult {
   console.warn(
-    `[resourcePressure] critical pressure guard tripped (reason=${reason}); returning 503`
+    `[resourcePressure] critical pressure guard tripped (reason=${reason})${formatSignalDetail(signals)}; returning 503`
   );
   return {
     success: false,
@@ -141,6 +151,7 @@ export function createResourcePressureRuntime(
   let scheduled = false;
   let inFlight: Promise<void> | null = null;
   let disposed = false;
+  let lastStatDegraded = false;
 
   const refresh = (): void => {
     if (disposed || inFlight) return;
@@ -151,6 +162,18 @@ export function createResourcePressureRuntime(
         if (disposed) return;
         const settledAtMs = nowMs();
         lastSignals = signals;
+        // memory.stat unavailable while memory.current is readable: the working-set
+        // ratio silently degrades to raw memory.current (page cache included), which
+        // is the pre-fix false-positive latch hazard. Warn once on entering the
+        // degraded state so the fallback cannot be mistaken for the fix working.
+        const statDegraded =
+          signals.cgroup.currentBytes != null && signals.cgroup.fileBytes == null;
+        if (statDegraded && !lastStatDegraded) {
+          console.warn(
+            "[resourcePressure] cgroup memory.stat unavailable (fileBytes=null); cgroup_ratio degraded to raw memory.current (page cache included) — false-positive latch possible"
+          );
+        }
+        lastStatDegraded = statDegraded;
         state = tracker.observe(signals);
         lastRefreshAtMs = settledAtMs;
         nextRefreshAtMs = settledAtMs + staleAfterMs;
@@ -193,7 +216,7 @@ export function createResourcePressureRuntime(
       }
       const cacheAge = lastSignals ? Math.max(0, now - lastRefreshAtMs) : Number.POSITIVE_INFINITY;
       return cacheAge <= maxStaleMs && state.severity === "critical"
-        ? buildCriticalGuard(state.reason)
+        ? buildCriticalGuard(state.reason, lastSignals)
         : null;
     },
     getObservation: () => ({ signals: lastSignals, state }),

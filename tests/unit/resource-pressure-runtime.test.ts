@@ -327,4 +327,61 @@ describe("ResourcePressureRuntime stale-while-revalidate cache", () => {
     assert.equal(second.getObservation().signals?.observedAtMs, 2);
     second.dispose();
   });
+
+  it("logs cgroup context on trip and warns once when the workingset fallback is active", async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown) => {
+      warnings.push(String(message));
+    };
+    try {
+      let now = 0;
+      let statMissing = false;
+      const runtime = createResourcePressureRuntime({
+        nowMs: () => now,
+        staleAfterMs: 10,
+        immediateHeapUsedMb: () => 100,
+        sample: async () => ({
+          ...signals(now),
+          cgroup: {
+            currentBytes: 1_000_000,
+            maxBytes: 1_000_000,
+            highBytes: null,
+            fileBytes: statMissing ? null : 10_000,
+            events: null,
+          },
+        }),
+      });
+
+      // Two samples with a genuine critical workingset ratio (990000/1000000).
+      runtime.check();
+      await settleRefresh(runtime);
+      now = 11;
+      runtime.check();
+      await settleRefresh(runtime);
+
+      now = 22;
+      const guard = runtime.check();
+      assert.ok(guard, "critical workingset must trip the guard");
+      const tripLine = warnings.find((line) => line.includes("critical pressure guard tripped"));
+      assert.ok(tripLine, "trip must be logged");
+      assert.ok(tripLine.includes("current=1000000"), tripLine);
+      assert.ok(tripLine.includes("file=10000"), tripLine);
+      assert.ok(tripLine.includes("workingSet=990000"), tripLine);
+
+      // memory.stat disappears: the raw-ratio fallback must be operator-visible once.
+      statMissing = true;
+      now = 33;
+      runtime.check();
+      await settleRefresh(runtime);
+      now = 44;
+      runtime.check();
+      await settleRefresh(runtime);
+      const degraded = warnings.filter((line) => line.includes("memory.stat unavailable"));
+      assert.equal(degraded.length, 1, "degraded fallback warns once per entry");
+      runtime.dispose();
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
 });

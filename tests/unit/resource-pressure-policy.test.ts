@@ -181,10 +181,7 @@ describe("resource pressure policy", () => {
     // page cache on top of 1.62 GiB anon, tripping cgroup_ratio critical at
     // 95% while the real working set was 33% and memory.events stayed zero.
     const tracker = createResourcePressureTracker(fastThresholds);
-    const cgroup = (
-      currentBytes: number,
-      fileBytes: number | null
-    ): ResourceSignals["cgroup"] => ({
+    const cgroup = (currentBytes: number, fileBytes: number | null): ResourceSignals["cgroup"] => ({
       currentBytes,
       maxBytes: 5 * 1024 ** 3,
       highBytes: null,
@@ -197,7 +194,18 @@ describe("resource pressure policy", () => {
     });
 
     // Raw current at 95% with 3 GiB reclaimable cache: workingset is 1.62/5 = 32%.
-    assert.equal(tracker.observe(signals(cgroup(5_033_164_800, 3_232_225_280))).severity, "normal");
+    // Sustain the incident shape across the full trip window: pre-fix this escalates
+    // to critical on the second sample (raw ratio >= criticalRatio) and latches;
+    // post-fix every sample stays normal because the workingset never approaches a
+    // threshold. This loop is the actual regression guard — a single sample cannot
+    // falsify the latch (sustainedSamplesCritical = 2).
+    for (let sample = 0; sample < 5; sample += 1) {
+      assert.equal(
+        tracker.observe(signals(cgroup(5_033_164_800, 3_232_225_280))).severity,
+        "normal",
+        `incident sample ${sample} must not latch`
+      );
+    }
     // Same current with zero cache is genuine pressure (sustained 2 samples).
     tracker.observe(signals(cgroup(5_033_164_800, 0)));
     assert.equal(tracker.observe(signals(cgroup(5_033_164_800, 0))).severity, "critical");

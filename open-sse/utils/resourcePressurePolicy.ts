@@ -197,7 +197,7 @@ export function classifyAdaptiveResourcePressure(
   return maxLevel(best, psiLevel(signals.psi?.fullAvg10 ?? null, thresholds, "psi_full"));
 }
 
-function workingSetBytes(cgroup: ResourceSignals["cgroup"]): number | null {
+export function workingSetBytes(cgroup: ResourceSignals["cgroup"]): number | null {
   if (cgroup.currentBytes == null) return null;
   if (cgroup.fileBytes == null || cgroup.fileBytes <= 0) return cgroup.currentBytes;
   // memory.current and memory.stat are separate, non-atomic reads; under churn
