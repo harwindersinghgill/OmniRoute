@@ -194,7 +194,7 @@ test("admitChatStructure routes structural rejection to per-connection controlle
   assert.equal(result.admit, false);
   if (result.admit) return;
   assert.equal(result.response.status, 503);
-  assert.equal(result.response.headers.get("Retry-After"), "1");
+  assert.equal(result.response.headers.get("Retry-After"), "2");
   occupied.release();
 });
 

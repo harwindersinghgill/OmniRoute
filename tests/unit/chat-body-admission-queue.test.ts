@@ -97,7 +97,7 @@ test("waiting for admission times out into a retryable 503", async () => {
   assert.equal(result.admit, false);
   if (!result.admit) {
     assert.equal(result.response.status, 503);
-    assert.equal(result.response.headers.get("retry-after"), "1");
+    assert.equal(result.response.headers.get("retry-after"), "2");
     assert.equal((await result.response.json()).error.code, "chat_admission_busy");
   }
   assert.ok(Date.now() - started >= 40, "must wait for the queue deadline before rejecting");

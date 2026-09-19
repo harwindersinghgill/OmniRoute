@@ -141,7 +141,7 @@ test("a byte-light request above the tool threshold is rejected when heavy capac
   assert.equal(result.admit, false);
   if (result.admit) return;
   assert.equal(result.response.status, 503);
-  assert.equal(result.response.headers.get("retry-after"), "1");
+  assert.equal(result.response.headers.get("retry-after"), "2");
   assert.equal((await result.response.json()).error.code, "chat_admission_busy");
   occupied.release();
 });
@@ -204,7 +204,7 @@ test("an uncapped oversized conversation still yields to occupied heavyweight ca
   assert.equal(result.admit, false);
   if (result.admit) return;
   assert.equal(result.response.status, 503, "backpressure is retryable, not a terminal 413");
-  assert.equal(result.response.headers.get("retry-after"), "1");
+  assert.equal(result.response.headers.get("retry-after"), "2");
   const payload = await result.response.json();
   assert.equal(payload.error.code, "chat_admission_busy");
   assert.equal(payload.error.reason, "structure_limit");

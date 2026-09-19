@@ -58,6 +58,11 @@ export const CHAT_ADMISSION_QUEUE_MAX_MS = parseNonNegativeInt(
   2000
 );
 
+/** Seconds for 503 Retry-After; tracks the admission wait, never a literal 1/2. */
+export function chatAdmissionRetryAfterSeconds(): number {
+  return Math.max(1, Math.ceil(CHAT_ADMISSION_QUEUE_MAX_MS / 1000));
+}
+
 /**
  * Queued-bytes budget for the admission wait (#9654 / U3). A parked waiter holds a
  * fully-buffered request body; several large coding-agent bodies (~750 KB) waiting at
@@ -190,6 +195,7 @@ export type ChatAdmissionShedReason = "queue_timeout" | "queued_bytes_budget";
 export interface ChatAdmissionShedEvent {
   reason: ChatAdmissionShedReason;
   activeHeavy: number;
+  activeHealthyHeadroom: number;
   waiting: number;
   queuedBytes: number;
   lane: string;
@@ -341,6 +347,7 @@ export class ChatAdmissionController {
     this.#onShed({
       reason,
       activeHeavy: this.#activeHeavy,
+      activeHealthyHeadroom: this.#activeHealthy,
       waiting: this.waitingCount,
       queuedBytes: this.#queuedBytes,
       lane,
@@ -658,7 +665,7 @@ function rejectionResponse(status: 413 | 503, hardMaxBytes: number): Response {
     ...CORS_HEADERS,
     "Content-Type": "application/json",
   };
-  if (!isPayload) headers["Retry-After"] = "2";
+  if (!isPayload) headers["Retry-After"] = String(chatAdmissionRetryAfterSeconds());
   return new Response(
     JSON.stringify({
       error: {
@@ -681,7 +688,7 @@ function structuralRejectionResponse(status: 413 | 503, maxMessages: number): Re
     ...CORS_HEADERS,
     "Content-Type": "application/json",
   };
-  if (!historyLimit) headers["Retry-After"] = "1";
+  if (!historyLimit) headers["Retry-After"] = String(chatAdmissionRetryAfterSeconds());
 
   return new Response(
     JSON.stringify({
