@@ -55,7 +55,7 @@ services:
       - "127.0.0.1:${PROD_LIVE_WS_PORT:-20132}:${LIVE_WS_PORT:-20132}"
     volumes:
       - omniroute-prod-data:/app/data
-    mem_limit: 2g
+    mem_limit: 3g
     logging:
       driver: json-file
       options:
