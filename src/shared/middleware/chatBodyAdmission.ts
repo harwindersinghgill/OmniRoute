@@ -20,7 +20,6 @@ import { createLogger } from "../utils/logger";
 import { createHmac } from "crypto";
 import v8 from "node:v8";
 import { trackRequest } from "../../lib/gracefulShutdown";
-
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(String(value), 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
@@ -57,11 +56,6 @@ export const CHAT_ADMISSION_QUEUE_MAX_MS = parseNonNegativeInt(
   process.env.OMNIROUTE_CHAT_ADMISSION_QUEUE_MS,
   2000
 );
-
-/** Seconds for 503 Retry-After; tracks the admission wait, never a literal 1/2. */
-export function chatAdmissionRetryAfterSeconds(): number {
-  return Math.max(1, Math.ceil(CHAT_ADMISSION_QUEUE_MAX_MS / 1000));
-}
 
 /**
  * Queued-bytes budget for the admission wait (#9654 / U3). A parked waiter holds a
@@ -665,7 +659,7 @@ function rejectionResponse(status: 413 | 503, hardMaxBytes: number): Response {
     ...CORS_HEADERS,
     "Content-Type": "application/json",
   };
-  if (!isPayload) headers["Retry-After"] = String(chatAdmissionRetryAfterSeconds());
+  if (!isPayload) headers["Retry-After"] = String(Math.max(1, Math.ceil(CHAT_ADMISSION_QUEUE_MAX_MS / 1000)));
   return new Response(
     JSON.stringify({
       error: {
@@ -688,7 +682,7 @@ function structuralRejectionResponse(status: 413 | 503, maxMessages: number): Re
     ...CORS_HEADERS,
     "Content-Type": "application/json",
   };
-  if (!historyLimit) headers["Retry-After"] = String(chatAdmissionRetryAfterSeconds());
+  if (!historyLimit) headers["Retry-After"] = String(Math.max(1, Math.ceil(CHAT_ADMISSION_QUEUE_MAX_MS / 1000)));
 
   return new Response(
     JSON.stringify({

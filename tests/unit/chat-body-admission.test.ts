@@ -15,6 +15,9 @@ const {
   releaseChatAdmissionWhenDone,
   resolveSelfLoopBearer,
 } = admissionModule;
+const { chatAdmissionRetryAfterSeconds } = await import(
+  "../../src/shared/middleware/chatAdmissionRetryAfter.ts"
+);
 const { withEarlyStreamKeepalive } = await import("../../open-sse/utils/earlyStreamKeepalive.ts");
 const { getActiveRequestCount } = await import("../../src/lib/gracefulShutdown.ts");
 
@@ -141,7 +144,10 @@ test("a byte-light request above the tool threshold is rejected when heavy capac
   assert.equal(result.admit, false);
   if (result.admit) return;
   assert.equal(result.response.status, 503);
-  assert.equal(result.response.headers.get("retry-after"), "2");
+  assert.equal(
+    result.response.headers.get("retry-after"),
+    String(chatAdmissionRetryAfterSeconds(CHAT_ADMISSION_QUEUE_MAX_MS))
+  );
   assert.equal((await result.response.json()).error.code, "chat_admission_busy");
   occupied.release();
 });
@@ -204,7 +210,10 @@ test("an uncapped oversized conversation still yields to occupied heavyweight ca
   assert.equal(result.admit, false);
   if (result.admit) return;
   assert.equal(result.response.status, 503, "backpressure is retryable, not a terminal 413");
-  assert.equal(result.response.headers.get("retry-after"), "2");
+  assert.equal(
+    result.response.headers.get("retry-after"),
+    String(chatAdmissionRetryAfterSeconds(CHAT_ADMISSION_QUEUE_MAX_MS))
+  );
   const payload = await result.response.json();
   assert.equal(payload.error.code, "chat_admission_busy");
   assert.equal(payload.error.reason, "structure_limit");
@@ -355,7 +364,10 @@ test("heavyweight admission is atomic and returns retryable 503 at capacity", as
   assert.equal(second.admit, false);
   if (second.admit) return;
   assert.equal(second.response.status, 503);
-  assert.equal(second.response.headers.get("Retry-After"), "2");
+  assert.equal(
+    second.response.headers.get("Retry-After"),
+    String(chatAdmissionRetryAfterSeconds(CHAT_ADMISSION_QUEUE_MAX_MS))
+  );
   assert.equal((await second.response.json()).error.code, "chat_admission_busy");
 
   first.lease?.release();

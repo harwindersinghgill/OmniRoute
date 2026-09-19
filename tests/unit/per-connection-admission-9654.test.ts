@@ -16,7 +16,11 @@ const {
   admitChatStructure,
   perConnectionAdmissionController,
   ChatAdmissionController,
+  CHAT_ADMISSION_QUEUE_MAX_MS,
 } = admissionModule;
+const { chatAdmissionRetryAfterSeconds } = await import(
+  "../../src/shared/middleware/chatAdmissionRetryAfter.ts"
+);
 
 function makeRequest(headers: Record<string, string>, body = "{}"): Request {
   const h: Record<string, string> = { "content-type": "application/json", ...headers };
@@ -194,7 +198,10 @@ test("admitChatStructure routes structural rejection to per-connection controlle
   assert.equal(result.admit, false);
   if (result.admit) return;
   assert.equal(result.response.status, 503);
-  assert.equal(result.response.headers.get("Retry-After"), "2");
+  assert.equal(
+    result.response.headers.get("Retry-After"),
+    String(chatAdmissionRetryAfterSeconds(CHAT_ADMISSION_QUEUE_MAX_MS))
+  );
   occupied.release();
 });
 

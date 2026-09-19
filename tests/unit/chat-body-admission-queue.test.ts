@@ -12,6 +12,9 @@ const {
   CHAT_ADMISSION_MAX_QUEUED_BYTES,
   CHAT_LARGE_BODY_BYTES,
 } = admissionModule;
+const { chatAdmissionRetryAfterSeconds } = await import(
+  "../../src/shared/middleware/chatAdmissionRetryAfter.ts"
+);
 
 function chatRequest(body: string, contentLength: string | null = String(body.length)): Request {
   const headers: Record<string, string> = { "content-type": "application/json" };
@@ -97,7 +100,10 @@ test("waiting for admission times out into a retryable 503", async () => {
   assert.equal(result.admit, false);
   if (!result.admit) {
     assert.equal(result.response.status, 503);
-    assert.equal(result.response.headers.get("retry-after"), "2");
+    assert.equal(
+      result.response.headers.get("retry-after"),
+      String(chatAdmissionRetryAfterSeconds(CHAT_ADMISSION_QUEUE_MAX_MS))
+    );
     assert.equal((await result.response.json()).error.code, "chat_admission_busy");
   }
   assert.ok(Date.now() - started >= 40, "must wait for the queue deadline before rejecting");

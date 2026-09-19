@@ -1,0 +1,1 @@
+- **fix(admission):** `503 chat_admission_busy` `Retry-After` tracks `OMNIROUTE_CHAT_ADMISSION_QUEUE_MS` (ceil seconds, min 1); shed logs include `activeHealthyHeadroom`

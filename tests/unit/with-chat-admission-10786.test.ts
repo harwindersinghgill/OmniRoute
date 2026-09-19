@@ -2,8 +2,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { ChatAdmissionController, admitChatRequest } = await import(
+const { ChatAdmissionController, admitChatRequest, CHAT_ADMISSION_QUEUE_MAX_MS } = await import(
   "../../src/shared/middleware/chatBodyAdmission.ts"
+);
+const { chatAdmissionRetryAfterSeconds } = await import(
+  "../../src/shared/middleware/chatAdmissionRetryAfter.ts"
 );
 const { withChatAdmission } = await import("../../src/shared/middleware/withChatAdmission.ts");
 
@@ -36,7 +39,10 @@ test("withChatAdmission does not invoke the handler when a second large body is 
   const res = await wrapped(chatRequest("http://x/v1/responses", body));
   assert.equal(called, false);
   assert.equal(res.status, 503);
-  assert.equal(res.headers.get("Retry-After"), "2");
+  assert.equal(
+    res.headers.get("Retry-After"),
+    String(chatAdmissionRetryAfterSeconds(CHAT_ADMISSION_QUEUE_MAX_MS))
+  );
   const json = await res.json();
   assert.equal(json.error.code, "chat_admission_busy");
   first.lease?.release();
