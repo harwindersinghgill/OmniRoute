@@ -14,8 +14,8 @@
 
 import { markServerStopping } from "@/lib/serverLifecycle";
 
-/** Grace period before forced exit (default 30s, configurable) */
-const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || "30000", 10);
+/** Grace period before forced exit (default 120s, configurable) */
+const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || "120000", 10);
 
 declare global {
   var __omnirouteShutdown:
