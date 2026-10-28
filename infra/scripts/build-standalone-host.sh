@@ -2,7 +2,7 @@
 set -euo pipefail
 # Memory-budgeted host build for FULL Next.js standalone (strict AC1, no stub).
 # (a) stop prod container to free RAM
-# (b) NODE_OPTIONS=--max-old-space-size=3584
+# (b) NODE_OPTIONS=--max-old-space-size=8192
 # (c) OMNIROUTE_BUILD_PROFILE=minimal npm run build (keeps /login UI)
 # (d) exit non-zero unless .build/next/standalone/server.js exists
 # Log full to {SCRATCH}/host-build.log
@@ -28,11 +28,24 @@ if [ "$FREE_GB" -lt "$REQUIRED_FREE_GB" ]; then
 fi
 echo "Disk pre-flight OK: ${FREE_GB}GB free on /"
 
-# stop to free RAM
-echo "Stopping prod container to free RAM..."
-# sudo docker compose -f /home/processor_user/omniroute/docker-compose.prod.yml stop omniroute-prod || true
-sleep 2
+# Optional stop to free RAM. Default off: a plain build must never stop production.
+if [[ "${STOP_PROD:-0}" == "1" ]]; then
+  echo "Stopping prod container to free RAM..."
+  sudo docker compose -f /home/processor_user/omniroute/docker-compose.prod.yml stop omniroute-prod
+  # Every exit path after this point must bring prod back; a failed build must not
+  # extend the outage. Placed AFTER the disk gate so a disk failure never stops prod.
+  trap 'sudo systemctl start omniroute.service || true' EXIT
+  sleep 2
+fi
 free -h | head -2
+
+REQUIRED_MEM_GB="${REQUIRED_MEM_GB:-7}"
+FREE_MEM_GB=$(awk '/^MemAvailable:/ {printf "%d", $2/1024/1024}' /proc/meminfo)
+if [ "$FREE_MEM_GB" -lt "$REQUIRED_MEM_GB" ]; then
+  echo "FAIL: ${FREE_MEM_GB}GB MemAvailable (need ${REQUIRED_MEM_GB}GB). Re-run with STOP_PROD=1."
+  exit 1
+fi
+echo "Memory pre-flight OK: ${FREE_MEM_GB}GB MemAvailable"
 
 # FIX-8 (2026-09-12): dynamic cd — works from canonical staging root AND isolated
 # worktrees (script lives at <repo>/infra/scripts/, repo root is two levels up).
@@ -53,11 +66,11 @@ export NODE_OPTIONS="--max-old-space-size=8192"
 # CLOUD_URL is unset in prod, so cloudSync is inert without stubbing. Full build is the
 # intended path (matches Dockerfile `builder` stage). See next.config.mjs fix too.
 # 2026-07-23: heap raised 4096->6144. v3.8.48's webpack build peaked at ~3.9GB old-space
-# and hit the 4GB V8 cap (FATAL ERROR: Reached heap limit). 6144 gives headroom above the
+# and hit the 4GB V8 cap (FATAL ERROR: Reached heap limit). 8192 gives headroom above the
 # failure point while fitting in available RAM (host ~8.8GB free); the 8GB swapfile
 # (FIX-1) absorbs any spillover.
-echo "NODE_OPTIONS=$NODE_OPTIONS (webpack + 6144 heap + 8G swap, FULL build profile)"
-echo "Using webpack + 6144 heap (8G swap overflow, full profile — no minimal stubs)."
+echo "NODE_OPTIONS=$NODE_OPTIONS (webpack + 8192 heap + 8G swap, FULL build profile)"
+echo "Using webpack + 8192 heap (8G swap overflow, full profile — no minimal stubs)."
 
 echo "npm ci (if needed)..."
 # Conditional ci: skip only when node_modules is present AND in sync with the
@@ -77,10 +90,25 @@ else
 fi
 
 echo "Building with FULL profile (standard VM production build)..."
+# Never inherit NODE_ENV: a dev build produces unminified chunks and a different BUILD_ID.
+export NODE_ENV=production
 # Use full output (no early |tail) to avoid SIGPIPE writer deaths; tee for visibility.
 npm run build 2>&1 | tee -a "${LOG}"
 
+# Lifecycle hooks are disabled globally on this host (npm config get ignore-scripts = true),
+# so `postbuild` never fires. Run the colocate step explicitly or the standalone tree ships
+# without its runtime workers (call-log artifact writer, compression workers).
+echo "Running colocate-standalone (postbuild equivalent)..."
+node scripts/build/colocate-standalone.mjs 2>&1 | tee -a "${LOG}"
+
 REPO_ROOT="$(pwd)"
+CALL_LOG_WORKER="${REPO_ROOT}/.build/next/standalone/src/lib/usage/callLogArtifactWorker.js"
+if [[ ! -f "${CALL_LOG_WORKER}" ]]; then
+  echo "ERROR: ${CALL_LOG_WORKER} missing — runtime workers were not colocated." >&2
+  exit 1
+fi
+echo "Colocate gate OK: callLogArtifactWorker.js present in standalone."
+
 STANDALONE="${REPO_ROOT}/.build/next/standalone/server.js"
 NEXT_MOD="${REPO_ROOT}/.build/next/standalone/node_modules/next/package.json"
 if [[ -f "${STANDALONE}" && -f "${NEXT_MOD}" ]]; then

@@ -21,13 +21,27 @@ if [[ -d "${PROD}" && "$(ls -A "${PROD}" 2>/dev/null)" ]]; then
 fi
 
 mkdir -p "${PROD}"
+# `--exclude` also protects the destination from `--delete`, so every excluded path
+# survives the mirror. `backups/` must be listed or the tarball taken above is deleted
+# by this very command; `node_modules/` stays UNANCHORED on purpose — anchoring it
+# ('/node_modules/') would drop that protection and strip standalone deps.
 rsync -av --delete \
   --exclude='.env' \
   --exclude='.env.*' \
   --exclude='data/' \
   --exclude='node_modules/' \
   --exclude='.git/' \
+  --exclude='backups/' \
   "${STAGING}/" "${PROD}/"
+
+# Assert the rollback artifact outlived the mirror. -print -quit closes the pipe early;
+# under pipefail a plain `grep -q` could make find exit 141 and report a false negative.
+if find "${PROD}/backups" -maxdepth 1 -name 'omniroute_pre_sync_*.tar.gz' -print -quit 2>/dev/null | grep -q .; then
+  echo "Pre-sync backup survived the rsync."
+else
+  echo "ERROR: pre-sync backup missing after rsync — check the backups/ exclude." >&2
+  exit 1
+fi
 
 # Hard gate: require host-built standalone artifact (no stub fallback)
 # 2026-07-10: enforces full Next.js (runner-from-artifacts) per strict AC1. # full-app-2026-07-10
