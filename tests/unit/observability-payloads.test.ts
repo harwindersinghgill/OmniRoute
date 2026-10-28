@@ -257,6 +257,7 @@ test("buildHealthPayload projects allowlisted adaptiveAdmission aggregates only"
     resourceReason: "none",
     resourceObservedAtMs: 1_700_000_000_000,
     pressureGuardRejectCount: 5,
+    resourceWorkingSetRatio: 0.886,
     shutdown: false,
     // Malicious / high-card sentinels that must never appear in the public payload.
     tenantId: "tenant-SECRET-should-not-leak",
@@ -319,6 +320,7 @@ test("buildHealthPayload projects allowlisted adaptiveAdmission aggregates only"
     resourceReason: "none",
     resourceObservedAtMs: 1_700_000_000_000,
     pressureGuardRejectCount: 5,
+    resourceWorkingSetRatio: 0.886,
     shutdown: false,
   });
 

@@ -26,7 +26,11 @@ import {
   type ResourcePressureGuardResult,
   type ResourcePressureObservation,
 } from "../../utils/resourcePressure.ts";
-import type { PressureReason, PressureSeverity } from "../../utils/resourcePressurePolicy.ts";
+import {
+  workingSetBytes,
+  type PressureReason,
+  type PressureSeverity,
+} from "../../utils/resourcePressurePolicy.ts";
 
 export { extractAdmissionCostFeatures } from "./requestFeatures.ts";
 
@@ -158,6 +162,8 @@ export type AdaptiveAdmissionPublicSnapshot = AdmissionSnapshot & {
   resourceReason: PressureReason;
   resourceObservedAtMs: number;
   pressureGuardRejectCount: number;
+  // Numeric working-set ratio (0..1) so operators can see the distance to 0.75 / 0.92.
+  resourceWorkingSetRatio: number | null;
 };
 
 export type AdaptiveAdmissionLifecycleOptions = {
@@ -422,12 +428,16 @@ class AdaptiveAdmissionRuntimeImpl implements AdaptiveAdmissionRuntime {
 
   snapshot(): AdaptiveAdmissionPublicSnapshot {
     const core = this.controller.snapshot();
+    const cgroup = this.getResourcePressureObservation().signals?.cgroup;
+    const used = cgroup ? workingSetBytes(cgroup) : null;
     return {
       ...core,
       resourceSeverity: this.lastResource.severity,
       resourceReason: this.lastResource.reason,
       resourceObservedAtMs: this.lastResource.observedAtMs,
       pressureGuardRejectCount: this.pressureGuardRejectCount,
+      resourceWorkingSetRatio:
+        used != null && cgroup?.maxBytes ? used / cgroup.maxBytes : null,
     };
   }
 

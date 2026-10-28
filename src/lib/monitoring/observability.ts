@@ -66,6 +66,7 @@ export type AdaptiveAdmissionHealthSummary = {
   resourceReason: AdaptiveAdmissionPublicSnapshot["resourceReason"];
   resourceObservedAtMs: number;
   pressureGuardRejectCount: number;
+  resourceWorkingSetRatio: number | null;
   shutdown: boolean;
 };
 
@@ -97,6 +98,7 @@ export function projectAdaptiveAdmissionSummary(
     resourceReason: snapshot.resourceReason,
     resourceObservedAtMs: snapshot.resourceObservedAtMs,
     pressureGuardRejectCount: snapshot.pressureGuardRejectCount,
+    resourceWorkingSetRatio: snapshot.resourceWorkingSetRatio,
     shutdown: snapshot.shutdown,
   };
 }
