@@ -1,4 +1,5 @@
 import { getPendingById } from "@/lib/usage/usageHistory";
+import { flatCopy } from "@/lib/usage/usageHistory/helpers";
 import { getChatLogMaxDepth } from "@/lib/logEnv";
 import { sanitizeErrorMessage } from "./error.ts";
 
@@ -100,7 +101,7 @@ function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
 
     const value = masked[key];
     if (typeof value === "string" && value.length > 20) {
-      masked[key] = `${value.slice(0, 10)}...${value.slice(-5)}`;
+      masked[key] = `${flatCopy(value.slice(0, 10))}...${flatCopy(value.slice(-5))}`;
     } else if (value) {
       masked[key] = "[REDACTED]";
     }
@@ -136,7 +137,7 @@ function truncateLogString(value: string, maxLength = MAX_LOG_STRING_LENGTH): st
   // bounded string truncated it a second time and the function was not idempotent.
   const marker = `\n[...truncated ${value.length - maxLength} chars...]\n`;
   const keep = Math.max(0, maxLength - marker.length);
-  return `${value.slice(0, Math.floor(keep / 2))}${marker}${value.slice(-Math.ceil(keep / 2))}`;
+  return `${flatCopy(value.slice(0, Math.floor(keep / 2)))}${marker}${flatCopy(value.slice(-Math.ceil(keep / 2)))}`;
 }
 
 /**
@@ -235,7 +236,7 @@ function appendBoundedChunk(
     return;
   }
 
-  chunks.push(chunk.slice(0, remaining));
+  chunks.push(flatCopy(chunk.slice(0, remaining)));
   if (chunks.length < maxItems) {
     chunks.push(`[stream chunk log truncated after ${maxBytes} bytes]`);
   }
@@ -290,17 +291,20 @@ function makeStreamChunkMethods(options: RequestLoggerOptions, captureChunks: bo
     Number.isInteger(options.maxStreamChunkItems) && Number(options.maxStreamChunkItems) > 0
       ? Number(options.maxStreamChunkItems)
       : DEFAULT_MAX_STREAM_CHUNK_ITEMS;
-  let pendingPushed = false;
-
+  // Re-run on every chunk: the pending detail gets a fresh copy of the arrays, so a retained
+  // detail never absorbs chunks appended after it was read, while /api/logs/active still sees
+  // progressive output. Copies element references (at most maxItems per array), not bytes.
   const push = () => {
-    if (pendingPushed) return;
     if (!options.requestId && (!options.connectionId || !options.model)) return;
-    pendingPushed = true;
     try {
       const pending = getPendingById();
       const exactEntry = options.requestId ? pending.get(options.requestId) : null;
       if (exactEntry) {
-        exactEntry.streamChunks = { ...streamChunks };
+        exactEntry.streamChunks = {
+          provider: [...streamChunks.provider],
+          openai: [...streamChunks.openai],
+          client: [...streamChunks.client],
+        };
         return;
       }
 
@@ -310,7 +314,11 @@ function makeStreamChunkMethods(options: RequestLoggerOptions, captureChunks: bo
           entry?.model === options.model &&
           entry?.provider === (options.provider || "")
         ) {
-          entry.streamChunks = { ...streamChunks };
+          entry.streamChunks = {
+            provider: [...streamChunks.provider],
+            openai: [...streamChunks.openai],
+            client: [...streamChunks.client],
+          };
           return;
         }
       }
@@ -324,9 +332,9 @@ function makeStreamChunkMethods(options: RequestLoggerOptions, captureChunks: bo
 
   const append = (arr: string[], bytes: { value: number; truncated: boolean }, chunk: string) => {
     if (!captureChunks) return;
-    push();
     const ts = new Date().toISOString().slice(11, 23);
     appendBoundedChunk(arr, bytes, `[${ts}] ${chunk}`, maxBytes, maxItems);
+    push();
   };
 
   return {

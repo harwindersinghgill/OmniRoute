@@ -179,13 +179,23 @@ export const MAX_PREVIEW_STRING = 1200;
 export const MAX_PREVIEW_ARRAY_ITEMS = 12;
 export const MAX_PREVIEW_OBJECT_KEYS = 24;
 
+// A V8 SlicedString keeps its whole parent alive. Round-tripping through a Buffer produces
+// a flat copy. utf16le (not utf8) so a split surrogate pair is preserved, not replaced by
+// U+FFFD; it costs 2 bytes per code unit in the transient copy, which is acceptable at the
+// truncation bounds this is used at.
+export function flatCopy(value: string): string {
+  return Buffer.from(value, "utf16le").toString("utf16le");
+}
+
 export function truncatePendingPreview(value: unknown, depth = 0): unknown {
   if (depth >= MAX_PREVIEW_DEPTH) {
     return "[TRUNCATED_DEPTH]";
   }
 
   if (typeof value === "string") {
-    return value.length > MAX_PREVIEW_STRING ? `${value.slice(0, MAX_PREVIEW_STRING)}...` : value;
+    return value.length > MAX_PREVIEW_STRING
+      ? `${flatCopy(value.slice(0, MAX_PREVIEW_STRING))}...`
+      : value;
   }
 
   if (Array.isArray(value)) {
