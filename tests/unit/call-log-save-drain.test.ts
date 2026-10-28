@@ -58,7 +58,7 @@ test("call-log drain waits for artifact metadata and summary commit", async () =
   assert.equal(fs.existsSync(path.join(TEST_DATA_DIR, "call_logs", row.artifact_relpath)), true);
 });
 
-test("forced close settles tracked saves before rejecting late saves", async () => {
+test("forced close drains the in-flight artifact write before rejecting late saves", async () => {
   const pendingId = "drain-forced-close";
   const pending = callLogs.saveCallLog({
     id: pendingId,
@@ -84,10 +84,13 @@ test("forced close settles tracked saves before rejecting late saves", async () 
     artifact_size_bytes: number | null;
     artifact_sha256: string | null;
   };
-  assert.equal(row.detail_state, "missing");
-  assert.equal(row.artifact_relpath, null);
-  assert.equal(row.artifact_size_bytes, null);
-  assert.equal(row.artifact_sha256, null);
+  // closeCallLogSaves(0) skips the summary drain but now gives the artifact writer a
+  // 2 s grace window, so the already-started write lands instead of failing open.
+  assert.equal(row.detail_state, "ready");
+  assert.ok(row.artifact_relpath);
+  assert.ok(row.artifact_size_bytes && row.artifact_size_bytes > 0);
+  assert.match(row.artifact_sha256 || "", /^[0-9a-f]{8}$/);
+  assert.equal(fs.existsSync(path.join(TEST_DATA_DIR, "call_logs", row.artifact_relpath)), true);
 
   await callLogs.saveCallLog({
     id: "drain-late-save",

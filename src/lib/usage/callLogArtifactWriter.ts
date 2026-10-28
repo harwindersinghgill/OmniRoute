@@ -3,7 +3,13 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 
-import type { CallLogArtifact, CallLogArtifactWriteResult } from "./callLogArtifacts.ts";
+import {
+  applyWriteEnvironment,
+  writeCallArtifact,
+  type CallLogArtifact,
+  type CallLogArtifactWriteResult,
+  type CallLogWriteEnvironment,
+} from "./callLogArtifacts.ts";
 
 const MAX_QUEUED_JOBS = 128;
 const IDLE_TIMEOUT_MS = 30_000;
@@ -18,11 +24,7 @@ type WorkerReply = {
 type QueueItem = {
   id: number;
   artifact: CallLogArtifact;
-  environment: {
-    pipelineMaxSizeKb?: string;
-    chatDebugFile?: string;
-    appLogLevel?: string;
-  };
+  environment: CallLogWriteEnvironment;
   resolve: (result: CallLogArtifactWriteResult | null) => void;
 };
 
@@ -34,6 +36,10 @@ let idleTimer: NodeJS.Timeout | null = null;
 let closing = false;
 let closeWaiters: Array<() => void> = [];
 let lastWarningAt = 0;
+// A worker that cannot be resolved or spawned must never drop the artifact: switch to
+// writing in-process for the rest of the process lifetime.
+let inlineMode = false;
+let resolveWorkerForTests: WorkerResolver | null = null;
 
 function fileExistsAtRuntime(candidate: string): boolean {
   // The worker is copied explicitly by the standalone/npm packaging policies.
@@ -116,6 +122,38 @@ function warnRateLimited(message: string): void {
   console.warn(message);
 }
 
+function runInline(item: QueueItem): void {
+  setImmediate(() => {
+    let result: CallLogArtifactWriteResult | null = null;
+    const originalConsoleError = console.error;
+    try {
+      applyWriteEnvironment(item.environment);
+      // writeCallArtifact embeds filesystem paths in its error text; keep them out of logs,
+      // exactly as callLogArtifactWorker.ts does on the worker path.
+      console.error = () => {};
+      result = writeCallArtifact(item.artifact);
+    } catch {
+      result = null;
+    } finally {
+      console.error = originalConsoleError;
+    }
+    if (active === item) active = null;
+    item.resolve(result);
+    pump();
+  });
+}
+
+function degradeToInline(): void {
+  inlineMode = true;
+  terminateWorker();
+  const item = active;
+  active = null;
+  // Without the else-branch, a failure raised from the `exit` handler while no item is
+  // active leaves the queue stalled until closeCallLogArtifactWriter times out.
+  if (item) runInline(item);
+  else pump();
+}
+
 function failOpen(warn = false): void {
   if (warn) warnRateLimited("[callLogs] Call-log artifact worker failed; detail omitted.");
   const failed = active ? [active, ...queue] : [...queue];
@@ -129,7 +167,7 @@ function failOpen(warn = false): void {
 function ensureWorker(): Worker {
   if (worker) return worker;
 
-  const { workerFile, execArgv } = resolveCallLogArtifactWorker();
+  const { workerFile, execArgv } = (resolveWorkerForTests ?? resolveCallLogArtifactWorker)();
   // Reflect.construct keeps Next/Turbopack from interpreting the runtime-selected
   // worker path as a build-time glob and tracing tens of thousands of unrelated files.
   const created = Reflect.construct(Worker, [pathToFileURL(workerFile), { execArgv }]) as Worker;
@@ -141,12 +179,17 @@ function ensureWorker(): Worker {
     completed.resolve(reply.result);
     pump();
   });
-  created.on("error", () => failOpen(true));
-  created.on("messageerror", () => failOpen(true));
+  created.on("error", (err: NodeJS.ErrnoException) => {
+    warnRateLimited(
+      `[callLogs] Call-log artifact worker unavailable (${err.code ?? "error"}); using in-process writes.`
+    );
+    degradeToInline();
+  });
+  created.on("messageerror", () => degradeToInline());
   created.on("exit", (code) => {
     if (worker !== created) return;
     worker = null;
-    if (code !== 0 || active) failOpen(true);
+    if (code !== 0 || active) degradeToInline();
   });
   return created;
 }
@@ -162,6 +205,10 @@ function pump(): void {
 
   active = next;
   clearIdleTimer();
+  if (inlineMode) {
+    runInline(next);
+    return;
+  }
   try {
     ensureWorker().postMessage({
       id: next.id,
@@ -169,8 +216,24 @@ function pump(): void {
       environment: next.environment,
     });
   } catch {
-    failOpen(true);
+    degradeToInline();
   }
+}
+
+type WorkerResolver = typeof resolveCallLogArtifactWorker;
+
+/** @internal test-only seam: force a resolution miss without touching the filesystem. */
+export function __setWorkerResolverForTests(resolver: WorkerResolver | null): void {
+  resolveWorkerForTests = resolver;
+  inlineMode = false;
+  active = null;
+  queue.length = 0;
+  terminateWorker();
+}
+
+/** @internal test-only observer. */
+export function __isInlineModeForTests(): boolean {
+  return inlineMode;
 }
 
 export function writeCallArtifactAsync(

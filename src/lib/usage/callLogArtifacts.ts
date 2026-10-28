@@ -17,6 +17,28 @@ const OMITTED_FOR_SIZE_LIMIT = "[omitted: call log artifact size limit exceeded]
 const STREAM_CHUNKS_OMITTED_FOR_SIZE_LIMIT =
   "[stream chunks omitted: call log artifact size limit exceeded]";
 
+export type CallLogWriteEnvironment = {
+  pipelineMaxSizeKb?: string;
+  chatDebugFile?: string;
+  appLogLevel?: string;
+};
+
+/**
+ * The writer reads its options lazily, so a per-write environment snapshot must be
+ * applied before serialization. Shared by the worker thread and the in-process fallback.
+ */
+export function applyWriteEnvironment(environment: CallLogWriteEnvironment): void {
+  const values = {
+    CALL_LOG_PIPELINE_MAX_SIZE_KB: environment.pipelineMaxSizeKb,
+    CHAT_DEBUG_FILE: environment.chatDebugFile,
+    APP_LOG_LEVEL: environment.appLogLevel,
+  };
+  for (const [name, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
+
 export type CallLogDetailState = "none" | "ready" | "missing" | "corrupt" | "legacy-inline";
 
 export type CallLogArtifact = {

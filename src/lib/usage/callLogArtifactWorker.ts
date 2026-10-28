@@ -1,37 +1,23 @@
 import { parentPort } from "node:worker_threads";
 
 import {
+  applyWriteEnvironment,
   writeCallArtifact,
   type CallLogArtifact,
   type CallLogArtifactWriteResult,
+  type CallLogWriteEnvironment,
 } from "./callLogArtifacts.ts";
 
 type WriteRequest = {
   id: number;
   artifact: CallLogArtifact;
-  environment: {
-    pipelineMaxSizeKb?: string;
-    chatDebugFile?: string;
-    appLogLevel?: string;
-  };
+  environment: CallLogWriteEnvironment;
 };
 
 type WriteReply = {
   id: number;
   result: CallLogArtifactWriteResult | null;
 };
-
-function applyWriteEnvironment(environment: WriteRequest["environment"]): void {
-  const values = {
-    CALL_LOG_PIPELINE_MAX_SIZE_KB: environment.pipelineMaxSizeKb,
-    CHAT_DEBUG_FILE: environment.chatDebugFile,
-    APP_LOG_LEVEL: environment.appLogLevel,
-  };
-  for (const [name, value] of Object.entries(values)) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
-}
 
 parentPort?.on("message", (request: WriteRequest) => {
   const originalConsoleError = console.error;

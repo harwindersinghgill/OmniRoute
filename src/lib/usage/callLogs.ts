@@ -622,14 +622,14 @@ export async function closeCallLogSaves(timeoutMs = 2_000): Promise<void> {
   callLogSavesClosing = true;
   const drained = await waitForCallLogSaves(timeoutMs);
   if (!drained) {
-    await closeCallLogArtifactWriter(0);
+    await closeCallLogArtifactWriter(2_000);
   }
 
   // The admission gate above makes this a stable snapshot. After a forced worker
   // close, queued artifact promises have resolved fail-open and their SQLite
   // continuations can finish before the database is closed.
   await Promise.allSettled([...pendingCallLogSaves]);
-  await closeCallLogArtifactWriter(0);
+  await closeCallLogArtifactWriter(2_000);
 }
 
 if (shouldPersistToDisk && process.env.NODE_ENV !== "test") {
