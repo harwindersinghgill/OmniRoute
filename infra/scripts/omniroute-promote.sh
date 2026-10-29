@@ -20,7 +20,10 @@ if [[ -d "${PROD}" && "$(ls -A "${PROD}" 2>/dev/null)" ]]; then
   # The archive contains omniroute/.env. umask 077 makes it 600 at creation; the chmod
   # covers an inherited umask override. Without this, any local user can read every
   # provider key out of the tarball (the parent dirs are 755).
-  ( umask 077; tar -czf "${PROD}/backups/${BACKUP_TAG}.tar.gz" -C /home/processor_user omniroute )
+  # Exclude backups/ from the archive itself: the tarball is written inside that
+  # directory, so archiving it makes tar read the file it is still growing
+  # ("file changed as we read it") and the run aborts after writing gigabytes.
+  ( umask 077; tar -czf "${PROD}/backups/${BACKUP_TAG}.tar.gz" --exclude='omniroute/backups' -C /home/processor_user omniroute )
   chmod 600 "${PROD}/backups/${BACKUP_TAG}.tar.gz"
   BACKUP_CREATED=1
   echo "Backup: ${PROD}/backups/${BACKUP_TAG}.tar.gz"
