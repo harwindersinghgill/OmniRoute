@@ -148,6 +148,9 @@ function runInline(item: QueueItem): void {
         else process.env[name] = previous;
       });
     }
+    if (result === null) {
+      warnRateLimited("[callLogs] In-process artifact write failed; detail omitted.");
+    }
     if (active === item) active = null;
     item.resolve(result);
     pump();

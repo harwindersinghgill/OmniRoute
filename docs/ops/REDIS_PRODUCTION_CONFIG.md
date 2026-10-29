@@ -12,6 +12,11 @@ Redis is an **optional, soft dependency** in OmniRoute — the application degra
 fallbacks) when Redis is unavailable. In production, tuning Redis reduces latency for three distinct
 workloads:
 
+> **Note (2026-10-29):** the bundled `docker-compose.prod.yml` no longer ships a `redis` service.
+> It was retired after verifying the container received no `REDIS_URL` and served no traffic, so
+> rate limiting, auth cache, and quota state run in-process. Everything below still applies if you
+> attach your own Redis instance and set `REDIS_URL`; without it, nothing changes.
+
 | Workload | Driver | Client Factory | Key Pattern |
 |---|---|---|---|
 | Rate limiting | `rateLimiter.ts` | `getRedisClient()` — lazy `ioredis` singleton | `<prefix>rl:*` Lua‑atomic rate limit windows |

@@ -15,9 +15,17 @@ BACKUP_TAG="omniroute_pre_sync_$(date +%Y%m%d_%H%M%S)"
 [[ -d "${STAGING}" ]] || { echo "ERROR: staging missing: ${STAGING}" >&2; exit 1; }
 
 mkdir -p "${PROD}/backups"
+BACKUP_CREATED=0
 if [[ -d "${PROD}" && "$(ls -A "${PROD}" 2>/dev/null)" ]]; then
-  tar -czf "${PROD}/backups/${BACKUP_TAG}.tar.gz" -C /home/processor_user omniroute
+  # The archive contains omniroute/.env. umask 077 makes it 600 at creation; the chmod
+  # covers an inherited umask override. Without this, any local user can read every
+  # provider key out of the tarball (the parent dirs are 755).
+  ( umask 077; tar -czf "${PROD}/backups/${BACKUP_TAG}.tar.gz" -C /home/processor_user omniroute )
+  chmod 600 "${PROD}/backups/${BACKUP_TAG}.tar.gz"
+  BACKUP_CREATED=1
   echo "Backup: ${PROD}/backups/${BACKUP_TAG}.tar.gz"
+  # `backups/` is excluded from the rsync below, so archives now accumulate: keep 5.
+  ls -1t "${PROD}"/backups/omniroute_pre_sync_*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
 fi
 
 mkdir -p "${PROD}"
@@ -37,10 +45,20 @@ rsync -av --delete \
 # Assert THIS run's rollback artifact outlived the mirror. A bare
 # `omniroute_pre_sync_*.tar.gz` glob would match a stale tarball from an earlier
 # promote and pass even when this run's backup was deleted.
-if [[ -f "${PROD}/backups/${BACKUP_TAG}.tar.gz" ]]; then
+if [[ "${BACKUP_CREATED}" -eq 0 ]]; then
+  echo "First promote into an empty prod tree: no rollback archive to verify."
+elif [[ -f "${PROD}/backups/${BACKUP_TAG}.tar.gz" ]]; then
   echo "Pre-sync backup survived the rsync."
 else
   echo "ERROR: ${BACKUP_TAG}.tar.gz missing after rsync — check the backups/ exclude." >&2
+  exit 1
+fi
+
+# A lingering REDIS_URL would point at a sidecar this compose no longer defines, and the
+# rate limiter fails OPEN on a dead Redis — silently disabling 429s. Values are never printed.
+if [[ -f "${PROD}/.env" ]] && /usr/bin/grep -qE '^(REDIS_URL|QUOTA_STORE_REDIS_URL)=' "${PROD}/.env"; then
+  echo "ERROR: ${PROD}/.env still sets REDIS_URL/QUOTA_STORE_REDIS_URL but the redis sidecar was retired." >&2
+  echo "  Remove it before promoting, or rate limiting will fail open." >&2
   exit 1
 fi
 
