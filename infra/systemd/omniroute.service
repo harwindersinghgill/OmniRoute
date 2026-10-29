@@ -7,6 +7,9 @@ Wants=network-online.target
 # Page the operator whenever ExecStart/ExecStartPost/ExecStop fail (oneshot+RemainAfterExit
 # reports active regardless). The template is silenced during maintenance holds via
 # ConditionPathExists=!/run/lyrics/maintenance.hold.
+# Cross-repo dependency: telegram-alert@.service is installed from the
+# lyrics-scraper-production repo; without it systemd logs "Failed to enqueue OnFailure=
+# job" and the failure is silent, so verify the unit exists when deploying this file.
 OnFailure=telegram-alert@%n.service
 
 [Service]

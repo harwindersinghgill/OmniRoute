@@ -163,6 +163,8 @@ export type AdaptiveAdmissionPublicSnapshot = AdmissionSnapshot & {
   resourceObservedAtMs: number;
   pressureGuardRejectCount: number;
   // Numeric working-set ratio (0..1) so operators can see the distance to 0.75 / 0.92.
+  // Sampled from the last background pressure observation, which may be seconds older
+  // than resourceObservedAtMs (that field tracks the admission-path sample).
   resourceWorkingSetRatio: number | null;
 };
 

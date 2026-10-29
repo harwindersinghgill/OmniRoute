@@ -34,7 +34,10 @@ if [[ "${STOP_PROD:-0}" == "1" ]]; then
   sudo docker compose -f /home/processor_user/omniroute/docker-compose.prod.yml stop omniroute-prod
   # Every exit path after this point must bring prod back; a failed build must not
   # extend the outage. Placed AFTER the disk gate so a disk failure never stops prod.
-  trap 'sudo systemctl start omniroute.service || true' EXIT
+  # `restart`, not `start`: the unit is oneshot+RemainAfterExit=yes and stays
+  # active(exited) across a plain `docker compose stop`, so `start` would be a no-op
+  # and leave the container down while systemd still reported active.
+  trap 'sudo systemctl restart omniroute.service || true' EXIT
   sleep 2
 fi
 free -h | head -2
@@ -42,7 +45,7 @@ free -h | head -2
 REQUIRED_MEM_GB="${REQUIRED_MEM_GB:-7}"
 FREE_MEM_GB=$(awk '/^MemAvailable:/ {printf "%d", $2/1024/1024}' /proc/meminfo)
 if [ "$FREE_MEM_GB" -lt "$REQUIRED_MEM_GB" ]; then
-  echo "FAIL: ${FREE_MEM_GB}GB MemAvailable (need ${REQUIRED_MEM_GB}GB). Re-run with STOP_PROD=1."
+  echo "FAIL: ${FREE_MEM_GB}GB MemAvailable (need ${REQUIRED_MEM_GB}GB). Re-run with STOP_PROD=1 (frees ~2.75GB) or raise REQUIRED_MEM_GB."
   exit 1
 fi
 echo "Memory pre-flight OK: ${FREE_MEM_GB}GB MemAvailable"

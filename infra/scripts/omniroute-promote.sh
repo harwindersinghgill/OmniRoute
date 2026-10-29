@@ -34,12 +34,13 @@ rsync -av --delete \
   --exclude='backups/' \
   "${STAGING}/" "${PROD}/"
 
-# Assert the rollback artifact outlived the mirror. -print -quit closes the pipe early;
-# under pipefail a plain `grep -q` could make find exit 141 and report a false negative.
-if find "${PROD}/backups" -maxdepth 1 -name 'omniroute_pre_sync_*.tar.gz' -print -quit 2>/dev/null | grep -q .; then
+# Assert THIS run's rollback artifact outlived the mirror. A bare
+# `omniroute_pre_sync_*.tar.gz` glob would match a stale tarball from an earlier
+# promote and pass even when this run's backup was deleted.
+if [[ -f "${PROD}/backups/${BACKUP_TAG}.tar.gz" ]]; then
   echo "Pre-sync backup survived the rsync."
 else
-  echo "ERROR: pre-sync backup missing after rsync — check the backups/ exclude." >&2
+  echo "ERROR: ${BACKUP_TAG}.tar.gz missing after rsync — check the backups/ exclude." >&2
   exit 1
 fi
 

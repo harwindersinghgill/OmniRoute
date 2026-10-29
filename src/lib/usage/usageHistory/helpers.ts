@@ -193,9 +193,11 @@ export function truncatePendingPreview(value: unknown, depth = 0): unknown {
   }
 
   if (typeof value === "string") {
-    return value.length > MAX_PREVIEW_STRING
-      ? `${flatCopy(value.slice(0, MAX_PREVIEW_STRING))}...`
-      : value;
+    // Flat-copy BOTH branches: a short string can still be a SlicedString of a huge
+    // parent, so the length check alone would leave the parent pinned.
+    return flatCopy(
+      value.length > MAX_PREVIEW_STRING ? `${value.slice(0, MAX_PREVIEW_STRING)}...` : value
+    );
   }
 
   if (Array.isArray(value)) {

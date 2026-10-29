@@ -215,25 +215,29 @@ function appendBoundedChunk(
   chunk: string,
   maxBytes: number,
   maxItems = DEFAULT_MAX_STREAM_CHUNK_ITEMS
-) {
+): boolean {
   if (typeof chunk !== "string" || chunk.length === 0) {
-    return;
+    return false;
   }
   if (chunks.length >= maxItems) {
+    const marker = `[stream chunk log truncated after ${maxItems} chunks]`;
+    // Once the marker is in place every later chunk is a no-op; report that so the
+    // caller can skip re-copying the arrays for the rest of the stream.
+    if (chunks[maxItems - 1] === marker) return false;
+    chunks[maxItems - 1] = marker;
     bytes.truncated = true;
-    chunks[maxItems - 1] = `[stream chunk log truncated after ${maxItems} chunks]`;
-    return;
+    return true;
   }
   if (bytes.value >= maxBytes) {
     bytes.truncated = true;
-    return;
+    return false;
   }
 
   const remaining = maxBytes - bytes.value;
   if (chunk.length <= remaining) {
     chunks.push(chunk);
     bytes.value += chunk.length;
-    return;
+    return true;
   }
 
   chunks.push(flatCopy(chunk.slice(0, remaining)));
@@ -242,6 +246,7 @@ function appendBoundedChunk(
   }
   bytes.value = maxBytes;
   bytes.truncated = true;
+  return true;
 }
 
 function hasOwnValues(value: unknown): boolean {
@@ -333,8 +338,7 @@ function makeStreamChunkMethods(options: RequestLoggerOptions, captureChunks: bo
   const append = (arr: string[], bytes: { value: number; truncated: boolean }, chunk: string) => {
     if (!captureChunks) return;
     const ts = new Date().toISOString().slice(11, 23);
-    appendBoundedChunk(arr, bytes, `[${ts}] ${chunk}`, maxBytes, maxItems);
-    push();
+    if (appendBoundedChunk(arr, bytes, `[${ts}] ${chunk}`, maxBytes, maxItems)) push();
   };
 
   return {

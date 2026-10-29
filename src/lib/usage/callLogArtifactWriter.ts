@@ -123,9 +123,13 @@ function warnRateLimited(message: string): void {
 }
 
 function runInline(item: QueueItem): void {
+  // Inline mode trades event-loop latency for not dropping the artifact: writeCallArtifact
+  // is synchronous, so this defers one write per tick rather than blocking the appender.
   setImmediate(() => {
     let result: CallLogArtifactWriteResult | null = null;
     const originalConsoleError = console.error;
+    const envKeys = ["CALL_LOG_PIPELINE_MAX_SIZE_KB", "CHAT_DEBUG_FILE", "APP_LOG_LEVEL"] as const;
+    const savedEnv = envKeys.map((name) => process.env[name]);
     try {
       applyWriteEnvironment(item.environment);
       // writeCallArtifact embeds filesystem paths in its error text; keep them out of logs,
@@ -136,6 +140,13 @@ function runInline(item: QueueItem): void {
       result = null;
     } finally {
       console.error = originalConsoleError;
+      // The worker thread had a private env; inline writes share the process env, so put
+      // back whatever was there instead of leaving the last artifact's snapshot behind.
+      envKeys.forEach((name, index) => {
+        const previous = savedEnv[index];
+        if (previous === undefined) delete process.env[name];
+        else process.env[name] = previous;
+      });
     }
     if (active === item) active = null;
     item.resolve(result);
