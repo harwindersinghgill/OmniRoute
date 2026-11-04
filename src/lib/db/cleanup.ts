@@ -16,6 +16,13 @@ import {
   type DeleteByPeriodTarget,
 } from "./cleanup/usagePurge";
 
+// Agentic-conversation retention: rows per DELETE statement, wall-clock budget
+// per scheduler tick (the remainder drains on later ticks), and a hard iteration
+// cap so a mis-reporting driver cannot spin the loop forever.
+const CHUNK_SIZE = 5000;
+const CHUNK_TIME_BUDGET_MS = 2000;
+const CHUNK_LOOP_CAP = 200;
+
 interface CleanupResult {
   deleted: number;
   deletedArtifacts?: number;
@@ -422,6 +429,79 @@ export async function cleanupCcrBlocks(): Promise<CleanupResult> {
 }
 
 /**
+ * Clean up old agentic_conversations and conversation_turn_nodes.
+ * conversation_turn_nodes has accumulated 2.3M+ rows (1.5GB+) without any pruning.
+ * Deletes run as atomic subquery LIMIT chunks — no db.transaction() wrapper, so
+ * each chunk commits on its own and never holds a long SQLite write lock.
+ */
+export async function cleanupAgenticConversations(): Promise<CleanupResult> {
+  const db = getDbInstance();
+
+  const retentionDays = getUserDatabaseSettings().retention?.callLogs ?? 30;
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+  const cutoffISO = cutoffDate.toISOString();
+
+  const result: CleanupResult = { deleted: 0, errors: 0 };
+
+  try {
+    // The chunk loops are fully synchronous better-sqlite3 calls on the Node main
+    // thread. Draining a 2.3M-row backlog in one pass would freeze the event loop
+    // exactly like the VACUUM this replaces (2026-11-04 incident), so the work is
+    // capped per tick and the remainder drains on later 6-hourly runs.
+    // Shared budget for all three phases so one tick stays bounded.
+    const deadline = Date.now() + CHUNK_TIME_BUDGET_MS;
+
+    // Returns the rows deleted plus whether the table was drained. "Drained" is
+    // tracked explicitly rather than inferred from the row count: a budget break
+    // after a short partial chunk still leaves a backlog behind.
+    const nogilChunk = async (sql: string) => {
+      const stmt = db.prepare(sql);
+      let deleted = 0;
+      let drained = false;
+      for (let chunks = 0; chunks < CHUNK_LOOP_CAP; chunks++) {
+        if (Date.now() >= deadline) {
+          // A deferral is expected behaviour, not a cleanup failure — warn only.
+          console.warn(
+            `[Cleanup] agentic cleanup hit the ${CHUNK_TIME_BUDGET_MS}ms budget; remaining rows drain next tick`
+          );
+          break;
+        }
+        const res = stmt.run(cutoffISO);
+        deleted += res.changes;
+        if (res.changes < CHUNK_SIZE) {
+          drained = true;
+          break;
+        }
+        // Yield so request handlers interleave with the deletes.
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      return { deleted, drained };
+    };
+
+    // 1. Turn nodes past the cutoff
+    const turns = await nogilChunk(
+      `DELETE FROM conversation_turn_nodes WHERE id IN (SELECT id FROM conversation_turn_nodes WHERE last_seen_at < ? LIMIT ${CHUNK_SIZE})`
+    );
+
+    // 2. Conversations past the cutoff
+    const convs = await nogilChunk(
+      `DELETE FROM agentic_conversations WHERE id IN (SELECT id FROM agentic_conversations WHERE last_seen_at < ? LIMIT ${CHUNK_SIZE})`
+    );
+
+    result.deleted = turns.deleted + convs.deleted;
+    console.log(
+      `[Cleanup] Deleted ${turns.deleted} turn nodes and ${convs.deleted} conversations older than ${retentionDays} days`
+    );
+  } catch (err: unknown) {
+    console.error("[Cleanup] Error cleaning agentic conversations:", err);
+    result.errors++;
+  }
+
+  return result;
+}
+
+/**
  * Run all cleanup functions if auto-cleanup is enabled.
  */
 export async function runAutoCleanup(): Promise<{
@@ -454,6 +534,7 @@ export async function runAutoCleanup(): Promise<{
     compressionRunTelemetry: await cleanupCompressionRunTelemetry(),
     proxyLogs: await cleanupProxyLogs(),
     ccrBlocks: await cleanupCcrBlocks(),
+    agenticConversations: await cleanupAgenticConversations(),
   };
 
   const totalDeleted = Object.values(results).reduce((sum, r) => sum + r.deleted, 0);
@@ -734,14 +815,9 @@ export function startCleanupScheduler(): void {
       const proxyResult = await cleanupProxyLogs();
       const totalDeleted = result.totalDeleted + proxyResult.deleted;
       if (totalDeleted > 0) {
-        console.log(`[Cleanup] Startup cleanup freed ${totalDeleted} rows. Running VACUUM...`);
-        try {
-          const db = getDbInstance();
-          db.exec("VACUUM");
-          console.log("[Cleanup] VACUUM completed after startup cleanup.");
-        } catch (vacErr) {
-          console.error("[Cleanup] VACUUM after cleanup failed:", vacErr);
-        }
+        console.log(
+          `[Cleanup] Startup cleanup freed ${totalDeleted} rows (in-process VACUUM disabled to prevent event loop freeze).`
+        );
       }
     } catch (err) {
       console.error("[Cleanup] Startup cleanup failed:", err);
@@ -755,14 +831,9 @@ export function startCleanupScheduler(): void {
       const proxyResult = await cleanupProxyLogs();
       const totalDeleted = result.totalDeleted + proxyResult.deleted;
       if (totalDeleted > 0) {
-        console.log(`[Cleanup] Periodic cleanup freed ${totalDeleted} rows. Running VACUUM...`);
-        try {
-          const db = getDbInstance();
-          db.exec("VACUUM");
-          console.log("[Cleanup] VACUUM completed after periodic cleanup.");
-        } catch (vacErr) {
-          console.error("[Cleanup] VACUUM after cleanup failed:", vacErr);
-        }
+        console.log(
+          `[Cleanup] Periodic cleanup freed ${totalDeleted} rows (in-process VACUUM disabled to prevent event loop freeze).`
+        );
       }
     } catch (err) {
       console.error("[Cleanup] Periodic cleanup failed:", err);
