@@ -392,6 +392,9 @@ export function createStreamController({
       if (disconnected || isClientDisconnectError(error)) {
         clearPendingRequest(error);
         logStream(disconnected ? "client_disconnect (post-abort)" : "client_disconnect");
+        // Client aborts are the highest-frequency terminal path under load and
+        // are exactly when the retained frame hurts most. Release before returning.
+        releaseTerminalCallbacks();
         return;
       }
 

@@ -22,7 +22,18 @@ import {
 const CHUNK_SIZE = 5000;
 // Hard row ceiling for conversation_turn_nodes. Age retention alone cannot
 // bound a table growing faster than its window; see cleanupAgenticConversations.
-export const MAX_TURN_NODES_ROWS = Number(process.env.OMNIROUTE_MAX_TURN_NODES_ROWS) || 500_000;
+const DEFAULT_MAX_TURN_NODES_ROWS = 500_000;
+/** Clamped to a positive integer: `-5` or `1e400` must not become a wipe. */
+export const MAX_TURN_NODES_ROWS = (() => {
+  const raw = Number(process.env.OMNIROUTE_MAX_TURN_NODES_ROWS);
+  if (Number.isInteger(raw) && raw > 0) return raw;
+  if (process.env.OMNIROUTE_MAX_TURN_NODES_ROWS !== undefined) {
+    console.warn(
+      `[Cleanup] Ignoring invalid OMNIROUTE_MAX_TURN_NODES_ROWS="${process.env.OMNIROUTE_MAX_TURN_NODES_ROWS}"; using ${DEFAULT_MAX_TURN_NODES_ROWS}`
+    );
+  }
+  return DEFAULT_MAX_TURN_NODES_ROWS;
+})();
 const CHUNK_TIME_BUDGET_MS = 2000;
 const CHUNK_LOOP_CAP = 200;
 
@@ -493,26 +504,57 @@ export async function cleanupAgenticConversations(): Promise<CleanupResult> {
     );
 
     // 3. Volume cap. Age-only retention cannot bound a table whose write rate
-    // (measured ~42k rows/day) outlives the retention window: turn nodes only
-    // started deleting on 2026-12-11 when the first rows crossed 90 days. Cap
-    // the row count so steady state is bounded regardless of growth rate.
+    // (~42k rows/day measured) outlives its window: nothing deletes until the
+    // first rows cross 90 days on 2026-12-11.
+    //
+    // Ordering is by CONVERSATION recency, never by node insertion order.
+    // conversation_turn_nodes.last_seen_at is written once at insert and never
+    // updated (no UPDATE exists in the tree), so ordering by it would delete the
+    // chain HEAD of long-running conversations first and fracture live
+    // transcripts. agentic_conversations.last_seen_at IS refreshed on use.
+    //
+    // Loops within the shared deadline so the cap can outrun the write rate; a
+    // single 5000-row delete per 6h tick would only remove 20k/day.
     let cappedDeleted = 0;
-    if (turns.drained && Date.now() < deadline) {
-      const total = (db.prepare("SELECT COUNT(*) c FROM conversation_turn_nodes").get() as {
-        c: number;
-      }).c;
-      const excess = total - MAX_TURN_NODES_ROWS;
-      if (excess > 0) {
+    if (Date.now() < deadline) {
+      // Captured BEFORE the sweep: only conversations this sweep empties may be
+      // pruned. A global NOT EXISTS would also delete every header-pinned
+      // conversation, which never has turn nodes by construction
+      // (touchOrCreateExternalConversation never writes them).
+      const touchedIds = new Set<string>();
+      const countStmt = db.prepare("SELECT COUNT(*) c FROM conversation_turn_nodes");
+      for (let chunks = 0; chunks < CHUNK_LOOP_CAP; chunks++) {
+        if (Date.now() >= deadline) break;
+        const total = (countStmt.get() as { c: number }).c;
+        const excess = total - MAX_TURN_NODES_ROWS;
+        if (excess <= 0) break;
         const chunk = Math.min(excess, CHUNK_SIZE);
-        const res = db
+        const victims = db
           .prepare(
-            `DELETE FROM conversation_turn_nodes WHERE rowid IN (SELECT rowid FROM conversation_turn_nodes ORDER BY last_seen_at ASC LIMIT ${chunk})`
+            "SELECT c.id FROM agentic_conversations c " +
+              "JOIN conversation_turn_nodes n ON n.conversation_id = c.id " +
+              "GROUP BY c.id ORDER BY c.last_seen_at ASC LIMIT ?"
           )
-          .run();
-        cappedDeleted = res.changes;
-        db.prepare(
-          `DELETE FROM agentic_conversations WHERE NOT EXISTS (SELECT 1 FROM conversation_turn_nodes n WHERE n.conversation_id = agentic_conversations.id)`
-        ).run();
+          .all(chunk) as Array<{ id: string }>;
+        if (victims.length === 0) break;
+        for (const v of victims) touchedIds.add(v.id);
+        const marks = victims.map(() => "?").join(",");
+        cappedDeleted += db
+          .prepare(`DELETE FROM conversation_turn_nodes WHERE conversation_id IN (${marks})`)
+          .run(...victims.map((v) => v.id)).changes;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      if (touchedIds.size > 0) {
+        const ids = [...touchedIds];
+        const marks = ids.map(() => "?").join(",");
+        const emptied = db
+          .prepare(
+            `SELECT id FROM agentic_conversations WHERE id IN (${marks}) AND NOT EXISTS (` +
+              "SELECT 1 FROM conversation_turn_nodes n WHERE n.conversation_id = agentic_conversations.id)"
+          )
+          .all(...ids) as Array<{ id: string }>;
+        const del = db.prepare(`DELETE FROM agentic_conversations WHERE id IN (${marks})`);
+        for (const row of emptied) del.run(row.id);
       }
     }
 

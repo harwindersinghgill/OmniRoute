@@ -38,7 +38,8 @@ describe("FIX-A: stream terminal callbacks are released", () => {
     // Three call sites strictly inside the controller methods, plus the
     // `const releaseTerminalCallbacks` declaration line.
     const calls = (src.match(/releaseTerminalCallbacks\(\)/g) || []).length;
-    assert.equal(calls, 3, `expected 3 call sites inside the handlers, saw ${calls}`);
+    // complete, disconnect, error, and the client-abort early return
+    assert.equal(calls, 4, `expected 4 call sites inside the handlers, saw ${calls}`);
     assert.ok(src.includes("const releaseTerminalCallbacks"), "declaration must exist");
   });
 });
@@ -127,15 +128,34 @@ describe("FIX-D: volume-capped retention", () => {
     );
   });
 
-  it("prunes oldest rows when over the cap", () => {
+  it("orders by conversation recency, never node insertion order", () => {
+    // turn-node last_seen_at is never UPDATEd, so ordering by it would delete
+    // the chain head of long-running conversations and fracture live transcripts.
     assert.ok(
-      src.includes("ORDER BY last_seen_at ASC LIMIT"),
-      "must delete the oldest rows first once over the cap"
+      src.includes("ORDER BY c.last_seen_at ASC"),
+      "must order victims by the conversation's refreshed last_seen_at"
     );
     assert.ok(
-      src.includes("NOT EXISTS (SELECT 1 FROM conversation_turn_nodes n"),
-      "must prune conversations newly orphaned by the cap sweep"
+      !src.includes("ORDER BY last_seen_at ASC LIMIT ${chunk}"),
+      "must not order turn nodes by their own frozen insertion time"
     );
+  });
+
+  it("loops within the deadline so it can outrun the write rate", () => {
+    assert.ok(src.includes("CHUNK_LOOP_CAP"), "cap sweep must be iteration-bounded");
+    assert.ok(/for \(let chunks = 0; chunks < CHUNK_LOOP_CAP/.test(src), "cap sweep must loop");
+  });
+
+  it("prune is scoped to conversations the sweep touched", () => {
+    assert.ok(src.includes("touchedIds"), "must capture the swept conversation ids");
+    assert.ok(
+      !src.includes('DELETE FROM agentic_conversations WHERE NOT EXISTS (SELECT 1 FROM conversation_turn_nodes n WHERE n.conversation_id = agentic_conversations.id)'),
+      "a global NOT EXISTS would delete every header-pinned conversation"
+    );
+  });
+
+  it("the cap rejects invalid env values instead of wiping", () => {
+    assert.ok(src.includes("Number.isInteger(raw) && raw > 0"), "cap must be a positive integer");
   });
 });
 

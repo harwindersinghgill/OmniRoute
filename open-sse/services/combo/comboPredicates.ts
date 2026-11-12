@@ -226,6 +226,10 @@ const REQUEST_SCOPED_UPSTREAM_ERROR_CODES: Record<string, true> = {
   upstream_response_failed: true,
   // Local combo per-target timer (targetTimeoutRunner) — not a connection health signal.
   combo_target_timeout: true,
+  // Our own shared request budget (requestDeadline) exhausted before the target
+  // was ever contacted. Counting it as a provider failure let a slow-upstream
+  // episode trip breakers on healthy providers (2026-11-12 audit §5).
+  upstream_timeout: true,
   // Local limiter queue-capacity codes — not a provider/connection health signal.
   rate_limit_queue_timeout: true,
   rate_limit_queue_full: true,
