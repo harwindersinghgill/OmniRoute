@@ -6,20 +6,24 @@ import {
   getChatLogMaxBodyBytes,
 } from "@/lib/logEnv";
 import { estimateSizeFast } from "../../utils/estimateSize.ts";
+import { flatCopy } from "@/lib/usage/usageHistory/helpers";
 
 export const MEMORY_EXTRACTION_TEXT_LIMIT = 64 * 1024;
 
 export function capMemoryExtractionText(value: string): string {
-  if (value.length <= MEMORY_EXTRACTION_TEXT_LIMIT) return value;
-  return value.slice(-MEMORY_EXTRACTION_TEXT_LIMIT);
+  // slice() returns a SlicedString whose parent retains the entire original
+  // buffer; flatCopy detaches it so the full payload can be collected.
+  if (value.length <= MEMORY_EXTRACTION_TEXT_LIMIT)
+    return flatCopy(value);
+  return flatCopy(value.slice(-MEMORY_EXTRACTION_TEXT_LIMIT));
 }
 
 export function truncateChatLogText(value: string): string {
   const limit = getChatLogTextLimit();
-  if (value.length <= limit) return value;
+  if (value.length <= limit) return flatCopy(value);
   const head = value.slice(0, Math.floor(limit / 2));
   const tail = value.slice(-Math.ceil(limit / 2));
-  return `${head}\n[...truncated ${value.length - limit} chars...]\n${tail}`;
+  return flatCopy(`${head}\n[...truncated ${value.length - limit} chars...]\n${tail}`);
 }
 
 export function cloneBoundedChatLogPayload(value: unknown, depth = 0): unknown {

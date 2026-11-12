@@ -51,7 +51,18 @@ export async function executeWithUpstreamAttemptTimeout<T>({
   // combo advances to the next target (Loop 1 finding #1).
   if (timeoutMs <= 0) {
     if (getRemainingBudgetMs() === null) return execute(signal);
-    throw createUpstreamAttemptTimeoutError(0, provider, model);
+    // Distinct code: this is OUR shared budget running out before the target was
+    // contacted, not a provider that hung. Only this code is treated as
+    // request-scoped and exempt from the provider breaker (Stage 1 R2).
+    const budgetErr = createUpstreamAttemptTimeoutError(0, provider, model) as Error & {
+      code: string;
+      requestBudgetExhausted?: boolean;
+    };
+    // Keep the established code (existing contract + tests assert UPSTREAM_TIMEOUT)
+    // but mark that OUR budget ran out, so the breaker logic can distinguish it
+    // from a provider that genuinely hung.
+    budgetErr.requestBudgetExhausted = true;
+    throw budgetErr;
   }
 
   const timeoutError = createUpstreamAttemptTimeoutError(timeoutMs, provider, model);

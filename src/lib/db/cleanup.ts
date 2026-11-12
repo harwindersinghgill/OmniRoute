@@ -20,6 +20,22 @@ import {
 // per scheduler tick (the remainder drains on later ticks), and a hard iteration
 // cap so a mis-reporting driver cannot spin the loop forever.
 const CHUNK_SIZE = 5000;
+// Hard row ceiling for conversation_turn_nodes. Age retention alone cannot
+// bound a table growing faster than its window; see cleanupAgenticConversations.
+const DEFAULT_MAX_TURN_NODES_ROWS = 500_000;
+/** Conversations inspected per cap iteration; bounds the id set per pass. */
+const MAX_CAP_CONVERSATIONS_PER_TICK = 100;
+/** Clamped to a positive integer: `-5` or `1e400` must not become a wipe. */
+export const MAX_TURN_NODES_ROWS = (() => {
+  const raw = Number(process.env.OMNIROUTE_MAX_TURN_NODES_ROWS);
+  if (Number.isInteger(raw) && raw > 0) return raw;
+  if (process.env.OMNIROUTE_MAX_TURN_NODES_ROWS !== undefined) {
+    console.warn(
+      `[Cleanup] Ignoring invalid OMNIROUTE_MAX_TURN_NODES_ROWS="${process.env.OMNIROUTE_MAX_TURN_NODES_ROWS}"; using ${DEFAULT_MAX_TURN_NODES_ROWS}`
+    );
+  }
+  return DEFAULT_MAX_TURN_NODES_ROWS;
+})();
 const CHUNK_TIME_BUDGET_MS = 2000;
 const CHUNK_LOOP_CAP = 200;
 
@@ -455,7 +471,7 @@ export async function cleanupAgenticConversations(): Promise<CleanupResult> {
     // Returns the rows deleted plus whether the table was drained. "Drained" is
     // tracked explicitly rather than inferred from the row count: a budget break
     // after a short partial chunk still leaves a backlog behind.
-    const nogilChunk = async (sql: string) => {
+    const nogilChunk = async (sql: string, params: readonly unknown[] = [cutoffISO]) => {
       const stmt = db.prepare(sql);
       let deleted = 0;
       let drained = false;
@@ -467,7 +483,7 @@ export async function cleanupAgenticConversations(): Promise<CleanupResult> {
           );
           break;
         }
-        const res = stmt.run(cutoffISO);
+        const res = stmt.run(...params);
         deleted += res.changes;
         if (res.changes < CHUNK_SIZE) {
           drained = true;
@@ -479,19 +495,114 @@ export async function cleanupAgenticConversations(): Promise<CleanupResult> {
       return { deleted, drained };
     };
 
-    // 1. Turn nodes past the cutoff
+    // 1. Turn nodes past the cutoff, but NEVER from a still-active conversation.
+    // conversation_turn_nodes.last_seen_at is written once at insert and never
+    // updated, so in a long-running conversation every early turn is "old" by
+    // that column even though the conversation is live. Without the NOT EXISTS
+    // guard, lowering retention.callLogs to 30 would delete the chain HEAD of
+    // active transcripts. The guard uses idx_turn_nodes_last_seen for the outer
+    // predicate and the agentic_conversations primary key for the subquery.
     const turns = await nogilChunk(
-      `DELETE FROM conversation_turn_nodes WHERE id IN (SELECT id FROM conversation_turn_nodes WHERE last_seen_at < ? LIMIT ${CHUNK_SIZE})`
+      `DELETE FROM conversation_turn_nodes WHERE id IN (
+         SELECT n.id FROM conversation_turn_nodes n
+         WHERE n.last_seen_at < ?
+           AND NOT EXISTS (
+             SELECT 1 FROM agentic_conversations c
+             WHERE c.id = n.conversation_id AND c.last_seen_at >= ?
+           )
+         LIMIT ${CHUNK_SIZE}
+       )`,
+      [cutoffISO, cutoffISO]
     );
 
     // 2. Conversations past the cutoff
     const convs = await nogilChunk(
-      `DELETE FROM agentic_conversations WHERE id IN (SELECT id FROM agentic_conversations WHERE last_seen_at < ? LIMIT ${CHUNK_SIZE})`
+      `DELETE FROM agentic_conversations WHERE id IN (SELECT id FROM agentic_conversations WHERE last_seen_at < ? LIMIT ${CHUNK_SIZE})`,
+      [cutoffISO]
     );
 
-    result.deleted = turns.deleted + convs.deleted;
+    // 3. Volume cap. Age-only retention cannot bound a table whose write rate
+    // (~42k rows/day measured) outlives its window: nothing deletes until the
+    // first rows cross 90 days on 2026-12-11.
+    //
+    // Ordering is by CONVERSATION recency, never by node insertion order.
+    // conversation_turn_nodes.last_seen_at is written once at insert and never
+    // updated (no UPDATE exists in the tree), so ordering by it would delete the
+    // chain HEAD of long-running conversations first and fracture live
+    // transcripts. agentic_conversations.last_seen_at IS refreshed on use.
+    //
+    // Loops within the shared deadline so the cap can outrun the write rate; a
+    // single 5000-row delete per 6h tick would only remove 20k/day.
+    let cappedDeleted = 0;
+    if (Date.now() < deadline) {
+      // Captured BEFORE the sweep: only conversations this sweep empties may be
+      // pruned. A global NOT EXISTS would also delete every header-pinned
+      // conversation, which never has turn nodes by construction
+      // (touchOrCreateExternalConversation never writes them).
+      const touchedIds = new Set<string>();
+      // WHERE EXISTS, not JOIN + GROUP BY: grouping 2.6M node rows into a temp
+      // B-tree is the expensive half of this query, and EXISTS short-circuits on
+      // the first matching node per conversation.
+      const victimsStmt = db.prepare(
+        "SELECT c.id FROM agentic_conversations c " +
+          "WHERE EXISTS (SELECT 1 FROM conversation_turn_nodes n WHERE n.conversation_id = c.id) " +
+          "ORDER BY c.last_seen_at ASC LIMIT ?"
+      );
+      // Delete by ROW, not by whole conversation: one conversation-scoped DELETE
+      // removed 435k rows (~1s) and up to 1M rows (1.6s) for large conversations
+      // -- a single unbounded synchronous block the deadline cannot interrupt.
+      const delRowsStmt = db.prepare(
+        "DELETE FROM conversation_turn_nodes WHERE rowid IN (" +
+          "SELECT rowid FROM conversation_turn_nodes WHERE conversation_id = ? LIMIT ?)"
+      );
+      const countStmt = db.prepare("SELECT COUNT(*) c FROM conversation_turn_nodes");
+      // Computed ONCE and decremented per delete. Re-reading COUNT(*) each outer
+      // pass was both an extra full scan and racy: the inner loop could delete
+      // well past MAX_TURN_NODES_ROWS before the next count was taken.
+      let excess = (countStmt.get() as { c: number }).c - MAX_TURN_NODES_ROWS;
+      capLoop: for (let chunks = 0; chunks < CHUNK_LOOP_CAP; chunks++) {
+        if (Date.now() >= deadline || excess <= 0) break;
+        const victims = victimsStmt.all(MAX_CAP_CONVERSATIONS_PER_TICK) as Array<{ id: string }>;
+        if (victims.length === 0) break;
+        let chunkChanges = 0;
+        for (const v of victims) {
+          if (Date.now() >= deadline || excess <= 0) break capLoop;
+          const changes = delRowsStmt.run(v.id, Math.min(excess, CHUNK_SIZE)).changes;
+          cappedDeleted += changes;
+          excess -= changes;
+          chunkChanges += changes;
+          touchedIds.add(v.id);
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        // Every victim was already empty; further passes cannot make progress.
+        if (chunkChanges === 0) break;
+      }
+      if (touchedIds.size > 0) {
+        // Prune only conversations this sweep emptied. Batch the id set: SQLite
+        // caps host parameters at 32766, and touchedIds can hold thousands.
+        const ids = [...touchedIds];
+        for (let i = 0; i < ids.length; i += 500) {
+          const slice = ids.slice(i, i + 500);
+          const marks = slice.map(() => "?").join(",");
+          const emptied = db
+            .prepare(
+              `SELECT id FROM agentic_conversations WHERE id IN (${marks}) AND NOT EXISTS (` +
+                "SELECT 1 FROM conversation_turn_nodes n WHERE n.conversation_id = agentic_conversations.id)"
+            )
+            .all(...slice) as Array<{ id: string }>;
+          if (emptied.length === 0) continue;
+          const delIds = emptied.map((r) => r.id);
+          db.prepare(`DELETE FROM agentic_conversations WHERE id IN (${delIds.map(() => "?").join(",")})`).run(
+            ...delIds
+          );
+        }
+      }
+    }
+
+    result.deleted = turns.deleted + convs.deleted + cappedDeleted;
     console.log(
-      `[Cleanup] Deleted ${turns.deleted} turn nodes and ${convs.deleted} conversations older than ${retentionDays} days`
+      `[Cleanup] Deleted ${turns.deleted} turn nodes and ${convs.deleted} conversations older than ${retentionDays} days` +
+        (cappedDeleted > 0 ? `; volume cap removed ${cappedDeleted} more (max ${MAX_TURN_NODES_ROWS})` : "")
     );
   } catch (err: unknown) {
     console.error("[Cleanup] Error cleaning agentic conversations:", err);

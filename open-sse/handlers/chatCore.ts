@@ -5697,6 +5697,13 @@ async function handleChatCoreInner({
       errorCode: streamErrorCode,
       startTime,
     });
+
+    // Break the retainer cycle: these two closures are captured into the
+    // streaming handlers and themselves capture the request scope, so a finished
+    // stream kept the whole request graph alive until the closure was collected.
+    // Every call site reads them through optional chaining, so null is safe.
+    onPipelineStreamError = null;
+    onClientDisconnectFinalize = null;
   };
 
   const streamFailureFinalizers = streamFailure.createStreamFailureFinalizers({

@@ -1,10 +1,9 @@
-import { checkHeapPressureGuard, HEAP_PRESSURE_THRESHOLD_MB } from "./heapPressure.ts";
+import { HEAP_PRESSURE_THRESHOLD_MB } from "./heapPressure.ts";
 import { buildErrorBody } from "./error.ts";
 import {
   createResourcePressureTracker,
   resolveResourcePressureThresholds,
   workingSetBytes,
-  type PressureReason,
   type ResourcePressureState,
   type ResourcePressureThresholds,
   type ResourceSignals,
@@ -74,13 +73,7 @@ function formatSignalDetail(signals: ResourceSignals | null): string {
   return ` cgroup(current=${cgroup.currentBytes}, file=${cgroup.fileBytes}, shmem=${cgroup.shmemBytes ?? null}, workingSet=${workingSetBytes(cgroup)}, max=${cgroup.maxBytes}, high=${cgroup.highBytes})`;
 }
 
-function buildCriticalGuard(
-  reason: PressureReason,
-  signals: ResourceSignals | null = null
-): ResourcePressureGuardResult {
-  console.warn(
-    `[resourcePressure] critical pressure guard tripped (reason=${reason})${formatSignalDetail(signals)}; returning 503`
-  );
+function buildCriticalGuard(): ResourcePressureGuardResult {
   return {
     success: false,
     status: 503,
@@ -105,9 +98,15 @@ function immediateHeapGuard(
   thresholdMb: number | null
 ): ResourcePressureGuardResult | null {
   if (thresholdMb == null) return null;
-  const guard = checkHeapPressureGuard(heapUsedMb, thresholdMb);
-  if (!guard) return null;
-  return buildCriticalGuard("v8_heap_absolute");
+  // Emit ONE warning per rejection. Previously checkHeapPressureGuard logged
+  // here AND buildCriticalGuard logged again, so one condition read as two
+  // (924 vs 941 counts in the 2026-11-12 audit).
+  if (heapUsedMb <= thresholdMb) return null;
+  console.warn(
+    `[resourcePressure] critical pressure guard tripped (reason=v8_heap_absolute, ` +
+      `heap=${Math.round(heapUsedMb)}MB > ${thresholdMb}MB); returning 503`
+  );
+  return buildCriticalGuard();
 }
 
 export function createResourcePressureRuntime(
@@ -230,7 +229,13 @@ export function createResourcePressureRuntime(
       }
       const cacheAge = lastSignals ? Math.max(0, now - lastRefreshAtMs) : Number.POSITIVE_INFINITY;
       return cacheAge <= maxStaleMs && state.severity === "critical"
-        ? buildCriticalGuard(state.reason, lastSignals)
+        ? (() => {
+            console.warn(
+              `[resourcePressure] critical pressure guard tripped (reason=${state.reason})` +
+                `${formatSignalDetail(lastSignals)}; returning 503`
+            );
+            return buildCriticalGuard();
+          })()
         : null;
     },
     getObservation: () => ({ signals: lastSignals, state }),

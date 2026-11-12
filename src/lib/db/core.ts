@@ -840,7 +840,10 @@ function offloadLegacyCallLogDetails(db: SqliteDatabase) {
   db.exec("DROP TABLE IF EXISTS call_logs_v1_legacy");
   try {
     db.pragma("wal_checkpoint(TRUNCATE)");
-    db.exec("VACUUM");
+    // No VACUUM: reclaimed pages go straight to the free list and are reused by
+    // later inserts; incremental_vacuum in vacuumScheduler.ts releases them to
+    // the filesystem off the hot path. A synchronous full VACUUM here is the
+    // 2026-11-04 event-loop freeze again.
     console.log(`[DB] Offloaded ${pendingRows.length} legacy call log detail row(s) to artifacts.`);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
