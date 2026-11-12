@@ -262,7 +262,13 @@ export async function runNow(): Promise<{ success: boolean; durationMs: number; 
   const start = Date.now();
   try {
     const db = getDbInstance();
-    db.exec("VACUUM");
+    // In-process VACUUM froze the event loop for 175s (2026-11-04) and 234s on
+    // its last recorded run. A PASSIVE WAL checkpoint reclaims the same pages on
+    // WAL databases without holding an exclusive lock over the whole file.
+    db.pragma("wal_checkpoint(PASSIVE)");
+    console.log(
+      "[VacuumScheduler] In-process VACUUM disabled; executed PASSIVE WAL checkpoint instead."
+    );
     const duration = Date.now() - start;
     currentState.lastRunAt = start;
     currentState.lastError = null;

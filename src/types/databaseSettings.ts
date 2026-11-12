@@ -133,7 +133,7 @@ export const DEFAULT_DATABASE_SETTINGS: Omit<DatabaseSettings, "location" | "sta
   },
   optimization: {
     autoVacuumMode: "FULL",
-    scheduledVacuum: "weekly",
+    scheduledVacuum: "never",
     vacuumHour: 2,
     pageSize: 4096,
     cacheSize: 65536,

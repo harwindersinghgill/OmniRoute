@@ -234,8 +234,8 @@ function hasClientTerminalSseMarker(text: string, clientResponseFormat?: string 
  */
 /** @param {StreamControllerOptions} options */
 export function createStreamController({
-  onDisconnect,
-  onError,
+  onDisconnect: initialOnDisconnect,
+  onError: initialOnError,
   provider,
   model,
   connectionId,
@@ -244,6 +244,13 @@ export function createStreamController({
   allowCompletedToolHandoffGrace = false,
   clientDisconnectGracePeriodMs = 0,
 }: StreamControllerOptions = {}) {
+  // Mutable so a completed/errored/disconnected stream can drop them. These
+  // closures capture the whole handleChatCoreInner frame (body, translatedBody,
+  // reqLogger, ...); keeping them referenced after the stream ends retains that
+  // frame for the life of the process (2026-11-12 audit, F1).
+  let onDisconnect = initialOnDisconnect;
+  let onError = initialOnError;
+
   const abortController = new AbortController();
   const startTime = Date.now();
   let disconnected = false;
@@ -301,6 +308,14 @@ export function createStreamController({
     return "request_signal_aborted";
   };
 
+  // Drop every terminal callback so the captured request frame can be collected.
+  // Safe to call repeatedly and safe after the callbacks already ran.
+  const releaseTerminalCallbacks = () => {
+    onDisconnect = undefined;
+    onError = undefined;
+    completedToolHandoffDrain = null;
+  };
+
   const controller = {
     signal: abortController.signal,
     startTime,
@@ -335,6 +350,7 @@ export function createStreamController({
       }
 
       onDisconnect?.({ reason, duration: Date.now() - startTime });
+      releaseTerminalCallbacks();
     },
 
     // Call when stream completes normally
@@ -344,6 +360,7 @@ export function createStreamController({
       cleanupClientAbortListener();
 
       logStream("complete");
+      releaseTerminalCallbacks();
     },
 
     markClientTerminalSeen: () => {
@@ -399,6 +416,9 @@ export function createStreamController({
       } else {
         pendingRequestCleared = true;
       }
+
+      // onError has run (or been skipped); nothing may hold this frame now.
+      releaseTerminalCallbacks();
 
       if (error instanceof Error && error.name === "AbortError") {
         logStream("aborted");

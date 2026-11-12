@@ -36,6 +36,7 @@ import {
 import { buildNoUpstreamResponseDiagnostics, buildRecoveryHint } from "./combo/pinRecovery.ts";
 import { formatExhaustedConnectionKey } from "./combo/comboDiagFormat.ts";
 import { buildTargetTimeoutRunner } from "./combo/targetTimeoutRunner.ts";
+import { runWithRequestDeadline } from "../utils/requestDeadline.ts";
 import { recordComboRequest, recordComboShadowRequest, getComboMetrics } from "./comboMetrics.ts";
 import { qualityScoreFor } from "./routing/index.ts";
 import {
@@ -699,7 +700,14 @@ export async function resolveTargetTimeoutMsForTarget(
  */
 export async function handleComboChat(options: HandleComboChatOptions): Promise<Response> {
   const traceInvocationId = options.invocationId ?? createInvocationId();
-  const response = await handleComboChatInner({ ...options, invocationId: traceInvocationId });
+  // Stamp ONE deadline for the whole combo walk. Without this, each sequential
+  // target exits chatCore's AsyncLocalStorage scope and stamps a fresh 110s
+  // budget, so a 10-target fallback can run for many minutes (2026-11-12 audit
+  // F5). runWithRequestDeadline reuses an outer context, so this is a no-op when
+  // the caller already stamped one.
+  const response = await runWithRequestDeadline(() =>
+    handleComboChatInner({ ...options, invocationId: traceInvocationId })
+  );
   response.headers.set("X-OmniRoute-Combo-Trace", traceInvocationId);
   const trace = getComboTrace(traceInvocationId);
   options.log.info(
