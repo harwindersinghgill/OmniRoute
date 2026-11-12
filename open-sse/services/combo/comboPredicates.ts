@@ -229,7 +229,7 @@ const REQUEST_SCOPED_UPSTREAM_ERROR_CODES: Record<string, true> = {
   // Our own shared request budget (requestDeadline) exhausted before the target
   // was ever contacted. Counting it as a provider failure let a slow-upstream
   // episode trip breakers on healthy providers (2026-11-12 audit §5).
-  upstream_timeout: true,
+  // (budget exhaustion is flagged via err.requestBudgetExhausted, not a code)
   // Local limiter queue-capacity codes — not a provider/connection health signal.
   rate_limit_queue_timeout: true,
   rate_limit_queue_full: true,
@@ -248,6 +248,7 @@ export function isRequestScopedUpstreamFailure(error?: {
   const type = typeof error?.type === "string" ? error.type.toLowerCase() : "";
   return (
     REQUEST_SCOPED_UPSTREAM_ERROR_CODES[code] === true ||
+    (error as { requestBudgetExhausted?: boolean })?.requestBudgetExhausted === true ||
     type === "context_length_exceeded" ||
     type === "local_queue_capacity"
   );

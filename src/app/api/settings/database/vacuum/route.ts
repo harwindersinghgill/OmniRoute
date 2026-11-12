@@ -18,14 +18,14 @@ export async function POST(request: NextRequest) {
     if (result.success) {
       return NextResponse.json({
         success: true,
-        message: `VACUUM completed in ${result.durationMs}ms`,
+        message: `WAL checkpoint completed in ${result.durationMs}ms (in-process VACUUM is disabled)`,
         duration: result.durationMs,
       });
     } else if (result.error === "already_running") {
       return NextResponse.json(
         {
           success: false,
-          error: "A vacuum is already in progress",
+          error: "A checkpoint is already in progress",
         },
         { status: 409 }
       );

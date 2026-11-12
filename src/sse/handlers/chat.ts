@@ -183,6 +183,7 @@ import {
 } from "../services/sameAccountTransportRetry";
 import { constrainConnectionsToQuota, resolveQuotaKeyScope } from "../../lib/quota/quotaKey";
 import { checkConnectionCapacity } from "../utils/backpressure";
+import { runWithRequestDeadline } from "@omniroute/open-sse/utils/requestDeadline.ts";
 import {
   buildManagedLeaseErrorResponse,
   buildManagedLeaseSelectionErrorResponse,
@@ -1271,7 +1272,15 @@ async function handleChatImplementation(
   );
 }
 
-export const handleChat = chatAdmission.withChatAdmission(handleChatImplementation);
+// Stamp ONE request deadline across the whole single-model attempt loop (retries,
+// cooldown waits, sequential handleChatCore calls). Without this each attempt
+// exits the AsyncLocalStorage scope and stamps a fresh 110s budget, leaving the
+// 524 window open for every request that hits a cooldown (2026-11-12 audit F5 /
+// Stage 1 R1). Nested wraps reuse the outer budget, so this is a no-op when a
+// caller already stamped one.
+export const handleChat = chatAdmission.withChatAdmission((...args) =>
+  runWithRequestDeadline(() => handleChatImplementation(...args))
+);
 
 /** Handle one resolved model through gates, credentials, and retry/fallback. */
 async function handleSingleModelChat(

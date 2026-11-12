@@ -1,4 +1,4 @@
-import { describe, it, after } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -179,5 +179,47 @@ describe("FIX-E: one log line per heap rejection", () => {
 describe("no regression: cleanup entry still wired", () => {
   it("runAutoCleanup includes agenticConversations", () => {
     assert.ok(read("src/lib/db/cleanup.ts").includes("agenticConversations: await cleanupAgenticConversations()"));
+  });
+});
+
+// ---------------------------------------------------------------- FIX-D behaviour
+// The source-grep assertions above cannot catch placeholder/arity bugs or an
+// unbounded single statement; Stage 1 found both in code that passed them.
+// This exercises the cap path against a real SQLite file.
+describe("FIX-D: cap sweep behaves correctly", () => {
+  it("prunes, reports, and never throws when over the cap", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-cap-"));
+    process.env.DATA_DIR = tmp;
+    process.env.DISABLE_SQLITE_AUTO_BACKUP = "true";
+    process.env.OMNIROUTE_MAX_TURN_NODES_ROWS = "10";
+
+    const core = await import("../../src/lib/db/core.ts");
+    const { cleanupAgenticConversations } = await import("../../src/lib/db/cleanup.ts");
+    const db = core.getDbInstance();
+
+    const insConv = db.prepare(
+      "INSERT INTO agentic_conversations (id, fingerprint_hash, last_message_count, last_messages_hash, first_seen_at, last_seen_at) VALUES (?, 'fp', 0, 'mh', ?, ?)"
+    );
+    const insNode = db.prepare(
+      "INSERT INTO conversation_turn_nodes (id, conversation_id, parent_id, role, first_seen_at, last_seen_at) VALUES (?, ?, NULL, 'user', ?, ?)"
+    );
+    // Three conversations, all older than the cutoff so the age phase drains
+    // first; five nodes each = 15 rows against a cap of 10.
+    const oldIso = new Date(Date.now() - 400 * 86400000).toISOString();
+    db.transaction(() => {
+      for (let c = 0; c < 3; c++) {
+        insConv.run(`cap_conv_${c}`, oldIso, oldIso);
+        for (let n = 0; n < 5; n++) insNode.run(`cap_node_${c}_${n}`, `cap_conv_${c}`, oldIso, oldIso);
+      }
+    })();
+
+    const result = await cleanupAgenticConversations();
+
+    assert.equal(result.errors, 0, "the cap sweep must not throw");
+    assert.ok(result.deleted > 0, "deleted must be reported, not swallowed by the catch");
+    const remaining = (db.prepare("SELECT COUNT(*) c FROM conversation_turn_nodes").get() as { c: number }).c;
+    assert.ok(remaining <= 10, `cap not enforced: ${remaining} rows remain`);
+    core.resetDbInstance();
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

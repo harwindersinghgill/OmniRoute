@@ -263,8 +263,11 @@ export async function runNow(): Promise<{ success: boolean; durationMs: number; 
   try {
     const db = getDbInstance();
     // In-process VACUUM froze the event loop for 175s (2026-11-04) and 234s on
-    // its last recorded run. A PASSIVE WAL checkpoint reclaims the same pages on
-    // WAL databases without holding an exclusive lock over the whole file.
+    // its last recorded run, so it must never run here again.
+    // NOTE: a PASSIVE checkpoint moves WAL frames into the main DB file; it does
+    // NOT compact free pages or shrink the file, and it no-ops under readers.
+    // Free-page reclamation now needs PRAGMA incremental_vacuum (auto_vacuum is
+    // INCREMENTAL by default) or an out-of-process VACUUM -- tracked separately.
     db.pragma("wal_checkpoint(PASSIVE)");
     console.log(
       "[VacuumScheduler] In-process VACUUM disabled; executed PASSIVE WAL checkpoint instead."

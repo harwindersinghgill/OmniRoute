@@ -23,6 +23,8 @@ const CHUNK_SIZE = 5000;
 // Hard row ceiling for conversation_turn_nodes. Age retention alone cannot
 // bound a table growing faster than its window; see cleanupAgenticConversations.
 const DEFAULT_MAX_TURN_NODES_ROWS = 500_000;
+/** Conversations inspected per cap iteration; bounds the id set per pass. */
+const MAX_CAP_CONVERSATIONS_PER_TICK = 100;
 /** Clamped to a positive integer: `-5` or `1e400` must not become a wipe. */
 export const MAX_TURN_NODES_ROWS = (() => {
   const raw = Number(process.env.OMNIROUTE_MAX_TURN_NODES_ROWS);
@@ -522,39 +524,51 @@ export async function cleanupAgenticConversations(): Promise<CleanupResult> {
       // conversation, which never has turn nodes by construction
       // (touchOrCreateExternalConversation never writes them).
       const touchedIds = new Set<string>();
+      const victimsStmt = db.prepare(
+        "SELECT c.id FROM agentic_conversations c " +
+          "JOIN conversation_turn_nodes n ON n.conversation_id = c.id " +
+          "GROUP BY c.id ORDER BY c.last_seen_at ASC LIMIT ?"
+      );
+      // Delete by ROW, not by whole conversation: one conversation-scoped DELETE
+      // removed 435k rows (~1s) and up to 1M rows (1.6s) for large conversations
+      // -- a single unbounded synchronous block the deadline cannot interrupt.
+      const delRowsStmt = db.prepare(
+        "DELETE FROM conversation_turn_nodes WHERE rowid IN (" +
+          "SELECT rowid FROM conversation_turn_nodes WHERE conversation_id = ? LIMIT ?)"
+      );
       const countStmt = db.prepare("SELECT COUNT(*) c FROM conversation_turn_nodes");
-      for (let chunks = 0; chunks < CHUNK_LOOP_CAP; chunks++) {
+      capLoop: for (let chunks = 0; chunks < CHUNK_LOOP_CAP; chunks++) {
         if (Date.now() >= deadline) break;
-        const total = (countStmt.get() as { c: number }).c;
-        const excess = total - MAX_TURN_NODES_ROWS;
+        const excess = (countStmt.get() as { c: number }).c - MAX_TURN_NODES_ROWS;
         if (excess <= 0) break;
-        const chunk = Math.min(excess, CHUNK_SIZE);
-        const victims = db
-          .prepare(
-            "SELECT c.id FROM agentic_conversations c " +
-              "JOIN conversation_turn_nodes n ON n.conversation_id = c.id " +
-              "GROUP BY c.id ORDER BY c.last_seen_at ASC LIMIT ?"
-          )
-          .all(chunk) as Array<{ id: string }>;
+        const victims = victimsStmt.all(MAX_CAP_CONVERSATIONS_PER_TICK) as Array<{ id: string }>;
         if (victims.length === 0) break;
-        for (const v of victims) touchedIds.add(v.id);
-        const marks = victims.map(() => "?").join(",");
-        cappedDeleted += db
-          .prepare(`DELETE FROM conversation_turn_nodes WHERE conversation_id IN (${marks})`)
-          .run(...victims.map((v) => v.id)).changes;
-        await new Promise((resolve) => setImmediate(resolve));
+        for (const v of victims) {
+          if (Date.now() >= deadline) break capLoop;
+          cappedDeleted += delRowsStmt.run(v.id, Math.min(excess, CHUNK_SIZE)).changes;
+          touchedIds.add(v.id);
+          await new Promise((resolve) => setImmediate(resolve));
+        }
       }
       if (touchedIds.size > 0) {
+        // Prune only conversations this sweep emptied. Batch the id set: SQLite
+        // caps host parameters at 32766, and touchedIds can hold thousands.
         const ids = [...touchedIds];
-        const marks = ids.map(() => "?").join(",");
-        const emptied = db
-          .prepare(
-            `SELECT id FROM agentic_conversations WHERE id IN (${marks}) AND NOT EXISTS (` +
-              "SELECT 1 FROM conversation_turn_nodes n WHERE n.conversation_id = agentic_conversations.id)"
-          )
-          .all(...ids) as Array<{ id: string }>;
-        const del = db.prepare(`DELETE FROM agentic_conversations WHERE id IN (${marks})`);
-        for (const row of emptied) del.run(row.id);
+        for (let i = 0; i < ids.length; i += 500) {
+          const slice = ids.slice(i, i + 500);
+          const marks = slice.map(() => "?").join(",");
+          const emptied = db
+            .prepare(
+              `SELECT id FROM agentic_conversations WHERE id IN (${marks}) AND NOT EXISTS (` +
+                "SELECT 1 FROM conversation_turn_nodes n WHERE n.conversation_id = agentic_conversations.id)"
+            )
+            .all(...slice) as Array<{ id: string }>;
+          if (emptied.length === 0) continue;
+          const delIds = emptied.map((r) => r.id);
+          db.prepare(`DELETE FROM agentic_conversations WHERE id IN (${delIds.map(() => "?").join(",")})`).run(
+            ...delIds
+          );
+        }
       }
     }
 
