@@ -105,6 +105,9 @@ describe("cleanup: conversation retention pruning", () => {
     db.exec("DELETE FROM conversation_turn_nodes; DELETE FROM agentic_conversations;");
     const oldIso = isoDaysAgo(120);
     const node = insNode();
+    // A parent row is required now: phase 1 skips nodes whose conversation is
+    // still active, so an unparented node is never age-pruned.
+    insConv().run("c", oldIso, oldIso);
     db.transaction(() => {
       for (let i = 0; i < 12_500; i++) node.run(`bulk_${i}`, "c", oldIso, oldIso);
     })();
@@ -118,7 +121,13 @@ describe("cleanup: conversation retention pruning", () => {
       const stmt = realPrepare(sql) as unknown as {
         run: (...a: unknown[]) => { changes: number };
       };
-      if (!sql.includes("SELECT id FROM conversation_turn_nodes WHERE last_seen_at < ?")) {
+      // Matched on the phase-1 body only. The newer form selects "n.id FROM
+      // conversation_turn_nodes n", so match that too rather than pinning the
+      // exact old SQL (phase 3 must not record here).
+      if (
+        !sql.includes("SELECT id FROM conversation_turn_nodes WHERE last_seen_at < ?") &&
+        !sql.includes("SELECT n.id FROM conversation_turn_nodes n")
+      ) {
         return stmt;
       }
       const realRun = stmt.run.bind(stmt);
@@ -138,7 +147,8 @@ describe("cleanup: conversation retention pruning", () => {
     }
 
     assert.equal(result.errors, 0);
-    assert.equal(result.deleted, 12_500, "all 12,500 rows pruned");
+    // 12,500 nodes + the 1 parent conversation row this fixture now needs.
+    assert.equal(result.deleted, 12_501, "all 12,500 nodes plus the expired parent are pruned");
     assert.deepEqual(
       chunkChanges,
       [5000, 5000, 2500],
@@ -189,28 +199,39 @@ describe("cleanup: conversation retention pruning", () => {
     );
   });
 
-  it("follows the configured retention window", async () => {
-    // The cutoff is retention.callLogs (default 90 days), so the boundaries are
-    // derived from the live setting rather than hard-coded — this test stays
-    // honest whether the operator runs 30, 90, or 365 days.
+  it("follows the configured retention window, and never prunes an active conversation", async () => {
+    // The cutoff is retention.callLogs, derived from the live setting rather
+    // than hard-coded so this stays honest at 30, 90, or 365 days.
+    //
+    // Active-conversation protection was added deliberately (2026-11-13).
+    // conversation_turn_nodes.last_seen_at is written once at insert and never
+    // updated, so EVERY early turn of a live conversation is "old" by that
+    // column. Without the guard, a 30-day window would delete the chain head of
+    // exactly the transcripts still in use -- which is what this test used to
+    // assert ("parents stay recent so only the age rule can decide").
     const days = getUserDatabaseSettings().retention?.callLogs ?? 30;
     db.exec("DELETE FROM conversation_turn_nodes; DELETE FROM agentic_conversations;");
     const node = insNode();
     const conv = insConv();
-    // Parents stay recent so only the age rule can decide.
     const now = isoDaysAgo(0);
+    const stale = isoDaysAgo(days + 1);
     for (const d of [days - 1, days + 1]) {
       conv.run(`bound_conv_${d}`, now, now);
       node.run(`bound_node_${d}`, `bound_conv_${d}`, isoDaysAgo(d), isoDaysAgo(d));
     }
+    // Same node ages, but under an IDLE conversation (last_seen_at well past the
+    // cutoff): this one must be pruned, proving age still decides.
+    conv.run("idle_conv", stale, stale);
+    node.run("idle_node", "idle_conv", stale, stale);
 
     const result = await mod.cleanupAgenticConversations();
 
     assert.equal(result.errors, 0);
     assert.deepEqual(
       db.prepare("SELECT id FROM conversation_turn_nodes ORDER BY id").all(),
-      [{ id: `bound_node_${days - 1}` }],
-      `a ${days - 1}-day-old row survives; a ${days + 1}-day-old row is pruned`
+      [{ id: `bound_node_${days - 1}` }, { id: `bound_node_${days + 1}` }],
+      `both nodes of the ACTIVE conversation survive (the ${days + 1}-day one only ` +
+        "because its parent is recent), and the idle conversation's stale node is pruned"
     );
   });
 });

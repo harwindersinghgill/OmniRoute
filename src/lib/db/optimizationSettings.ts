@@ -198,7 +198,14 @@ function applyPersistentOptimizationPragmas(
     if (shouldRestoreWal) db.pragma("journal_mode = DELETE");
     db.pragma(`auto_vacuum = ${targetAutoVacuum}`);
     db.pragma(`page_size = ${targetPageSize}`);
-    db.exec("VACUUM");
+    // No in-process VACUUM. auto_vacuum and page_size only take effect after a
+    // full rebuild, and that rebuild is an unbounded synchronous block on a
+    // production DB of this size — it froze the event loop for minutes
+    // (2026-11-04 incident). An offline maintenance window does that work.
+    console.log(
+      "[DB] Skipping in-process VACUUM for persistent pragma change " +
+        "(auto_vacuum/page_size require offline maintenance on production DB)"
+    );
   } finally {
     if (shouldRestoreWal) {
       try {
