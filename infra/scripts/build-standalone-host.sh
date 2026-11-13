@@ -37,7 +37,7 @@ if [[ "${STOP_PROD:-0}" == "1" ]]; then
   # `restart`, not `start`: the unit is oneshot+RemainAfterExit=yes and stays
   # active(exited) across a plain `docker compose stop`, so `start` would be a no-op
   # and leave the container down while systemd still reported active.
-  trap 'sudo systemctl restart omniroute.service || true' EXIT
+  trap 'sudo systemctl reset-failed omniroute.service 2>/dev/null || true; sudo systemctl restart omniroute.service || true' EXIT
   sleep 2
 fi
 free -h | head -2
@@ -61,7 +61,8 @@ echo "Using node: $(node --version) npm: $(npm --version)"
 
 export OMNIROUTE_USE_TURBOPACK=0
 export OMNIROUTE_MITM_STUB=1
-export NODE_OPTIONS="--max-old-space-size=8192"
+export NODE_OPTIONS="--max-old-space-size=${OMNIROUTE_BUILD_MEMORY_MB:-6144}"
+export CIRCLE_NODE_TOTAL="${CIRCLE_NODE_TOTAL:-3}"
 # FIX-2b (2026-07-10): Removed OMNIROUTE_BUILD_PROFILE=minimal. The minimal profile is
 # for the "omniroute-secure" security-hardened distribution, NOT standard VM production.
 # It triggered a latent webpack NormalModuleReplacementPlugin path-resolution bug
@@ -86,10 +87,10 @@ if [ -d node_modules ] && [ -f package-lock.json ]; then
     echo "node_modules in sync with lockfile; skipping npm ci to conserve RAM for the Next build phase."
   else
     echo "node_modules STALE vs lockfile (version merge?); running npm ci to sync deps."
-    npm ci --no-audit --no-fund --legacy-peer-deps 2>&1 | tee -a "${LOG}" || true
+    npm ci --no-audit --no-fund --legacy-peer-deps 2>&1 | tee -a "${LOG}"
   fi
 else
-  npm ci --no-audit --no-fund --legacy-peer-deps 2>&1 | tee -a "${LOG}" || true
+  npm ci --no-audit --no-fund --legacy-peer-deps 2>&1 | tee -a "${LOG}"
 fi
 
 echo "Building with FULL profile (standard VM production build)..."
