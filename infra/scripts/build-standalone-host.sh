@@ -73,8 +73,8 @@ export CIRCLE_NODE_TOTAL="${CIRCLE_NODE_TOTAL:-3}"
 # and hit the 4GB V8 cap (FATAL ERROR: Reached heap limit). 8192 gives headroom above the
 # failure point while fitting in available RAM (host ~8.8GB free); the 8GB swapfile
 # (FIX-1) absorbs any spillover.
-echo "NODE_OPTIONS=$NODE_OPTIONS (webpack + 8192 heap + 8G swap, FULL build profile)"
-echo "Using webpack + 8192 heap (8G swap overflow, full profile — no minimal stubs)."
+echo "NODE_OPTIONS=$NODE_OPTIONS (V8 heap ceiling; a full build needs >5 GiB -- see the OOM note below)"
+echo "Using webpack FULL profile (no minimal stubs)."
 
 echo "npm ci (if needed)..."
 # Conditional ci: skip only when node_modules is present AND in sync with the
