@@ -119,6 +119,7 @@ if [[ -f "${STANDALONE}" && -f "${NEXT_MOD}" ]]; then
   echo "SUCCESS: standalone artifact present: ${STANDALONE}"
   echo "SUCCESS: standalone node_modules/next present (FIX-3a dockerignore validation)"
   ls -l "${REPO_ROOT}/.build/next/standalone/" | head -5
+  rm -rf "${REPO_ROOT}/.build/next/cache"
   echo "=== build-standalone-host.sh END SUCCESS $(date -Iseconds) ==="
   exit 0
 elif [[ -f "${STANDALONE}" ]]; then

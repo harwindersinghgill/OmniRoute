@@ -23,12 +23,12 @@ if [[ -d "${PROD}" && "$(ls -A "${PROD}" 2>/dev/null)" ]]; then
   # Exclude backups/ from the archive itself: the tarball is written inside that
   # directory, so archiving it makes tar read the file it is still growing
   # ("file changed as we read it") and the run aborts after writing gigabytes.
-  ( umask 077; tar -czf "${PROD}/backups/${BACKUP_TAG}.tar.gz" --exclude='omniroute/backups' -C /home/processor_user omniroute )
+  ( umask 077; tar -czf "${PROD}/backups/${BACKUP_TAG}.tar.gz" --exclude='omniroute/backups' --exclude='omniroute/.build/next/cache' -C /home/processor_user omniroute )
   chmod 600 "${PROD}/backups/${BACKUP_TAG}.tar.gz"
   BACKUP_CREATED=1
   echo "Backup: ${PROD}/backups/${BACKUP_TAG}.tar.gz"
   # `backups/` is excluded from the rsync below, so archives now accumulate: keep 5.
-  ls -1t "${PROD}"/backups/omniroute_pre_sync_*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
+  ls -1t "${PROD}"/backups/omniroute_pre_sync_*.tar.gz 2>/dev/null | tail -n +3 | xargs -r rm -f
 fi
 
 mkdir -p "${PROD}"
@@ -40,6 +40,7 @@ rsync -av --delete \
   --exclude='.env' \
   --exclude='.env.*' \
   --exclude='data/' \
+  --exclude='.build/next/cache/' \
   --exclude='node_modules/' \
   --exclude='.git/' \
   --exclude='backups/' \
@@ -94,6 +95,9 @@ if [[ -f "${PROD}/.env" ]]; then
   chmod 600 "${PROD}/.env"
   chown processor_user:processor_user "${PROD}/.env"
 fi
+
+echo "Building omniroute:prod image (runner-from-artifacts)..."
+docker compose -f "${PROD}/docker-compose.prod.yml" build omniroute-prod
 
 systemctl daemon-reload
 systemctl restart omniroute.service
