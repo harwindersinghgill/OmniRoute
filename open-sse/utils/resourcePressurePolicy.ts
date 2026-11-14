@@ -46,6 +46,8 @@ export type ResourceSignals = {
     fullAvg10: number | null;
     fullAvg60: number | null;
     fullAvg300: number | null;
+    /** Which PSI file the sample came from; null when no sample was read. */
+    psiSource?: "cgroup" | "host" | null;
   } | null;
 };
 
