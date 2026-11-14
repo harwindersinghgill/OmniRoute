@@ -58,7 +58,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      # 60s, not 15s: a cold start on this 6-vCPU host measured GET /login at
+      # 2904ms against the 5s timeout and Docker logged 5 consecutive timeouts
+      # before recovering (2026-11-15 deploy). The 5s timeout stays -- it is the
+      # correct liveness signal; only the startup grace was too short.
+      start_period: 60s
 
 volumes:
   omniroute-prod-data:

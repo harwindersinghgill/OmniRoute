@@ -120,6 +120,13 @@ if [[ -f "${STANDALONE}" && -f "${NEXT_MOD}" ]]; then
   echo "SUCCESS: standalone node_modules/next present (FIX-3a dockerignore validation)"
   ls -l "${REPO_ROOT}/.build/next/standalone/" | head -5
   rm -rf "${REPO_ROOT}/.build/next/cache"
+  # Q2 (2026-11-15): bounded build-cache retention. A full build leaves multi-GB
+  # of builder cache; left unbounded it grows across upgrades (measured 4.694GB,
+  # 2.742GB stale). 168h keeps the immediately-useful cache for the next rebuild
+  # and drops week-old layers. Deliberately inline here rather than a new
+  # systemd timer: a new timer unit would break the repo<->live timer-inventory
+  # parity test. Failure is non-fatal -- a cache prune must never fail a build.
+  (sudo docker builder prune --filter until=168h -f || docker builder prune --filter until=168h -f) >/dev/null 2>&1 || true
   echo "=== build-standalone-host.sh END SUCCESS $(date -Iseconds) ==="
   exit 0
 elif [[ -f "${STANDALONE}" ]]; then
