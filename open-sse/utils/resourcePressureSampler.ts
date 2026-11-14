@@ -218,6 +218,24 @@ function parsePsi(text: string | null): ResourceSignals["psi"] {
   return matched ? result : null;
 }
 
+/**
+ * First sample that parses wins. cgroup PSI is passed before host PSI so a
+ * container reports its OWN memory stalls; /proc/pressure/memory is
+ * machine-wide and, inside a container, belongs to every workload on the host.
+ */
+function firstParseablePsi(
+  ...samples: Array<string | null>
+): { text: string; psiSource: "cgroup" | "host" } | null {
+  const sources = ["cgroup", "host"] as const;
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index];
+    if (sample != null && parsePsi(sample)) {
+      return { text: sample, psiSource: sources[Math.min(index, sources.length - 1)] };
+    }
+  }
+  return null;
+}
+
 export async function sampleResourceSignals(
   deps: SampleResourceSignalsDeps = {}
 ): Promise<ResourceSignals> {
@@ -249,6 +267,7 @@ export async function sampleResourceSignals(
         readText(path.join(cgroupDirectory, "memory.high")),
         readText(path.join(cgroupDirectory, "memory.events")),
         readText(path.join(cgroupDirectory, "memory.stat")),
+        readText(path.join(cgroupDirectory, "memory.pressure")),
       ])
     : null;
   // Named bindings instead of positional indices: the read order above is
@@ -260,8 +279,16 @@ export async function sampleResourceSignals(
     high: cgroupReads?.[2] ?? null,
     events: cgroupReads?.[3] ?? null,
     stat: cgroupReads?.[4] ?? null,
+    pressure: cgroupReads?.[5] ?? null,
   };
-  const psi = await readText("/proc/pressure/memory").catch(() => null);
+  // /proc/pressure/memory is HOST-WIDE: inside a container it reports every
+  // workload on the machine, so an unrelated service swapping can shed this
+  // container's traffic (observed 2026-11-14: host some avg10=93.9 vs
+  // criticalPsiAvg10=40 while this cgroup read 0.00 at 33% of memory.max).
+  // Prefer this unit's own PSI; fall back to host only when unparseable.
+  const hostPsi = await readText("/proc/pressure/memory").catch(() => null);
+  const psiWinner = firstParseablePsi(cgroupFiles.pressure, hostPsi);
+  const parsedPsi = psiWinner ? parsePsi(psiWinner.text) : null;
 
   return {
     observedAtMs: (deps.nowMs ?? Date.now)(),
@@ -281,6 +308,6 @@ export async function sampleResourceSignals(
       shmemBytes: parseMemoryStatBytes(cgroupFiles.stat, "shmem"),
       events: parseMemoryEvents(cgroupFiles.events),
     },
-    psi: parsePsi(psi),
+    psi: parsedPsi ? { ...parsedPsi, psiSource: psiWinner?.psiSource ?? null } : null,
   };
 }

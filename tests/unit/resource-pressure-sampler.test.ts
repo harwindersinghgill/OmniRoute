@@ -207,3 +207,48 @@ describe("sampleResourceSignals", () => {
     assert.equal(sanitizeMemoryBytes("123"), 123);
   });
 });
+
+// 2026-11-14 incident: /proc/pressure/memory is HOST-WIDE. A container reading
+// it reported the machine's 93.9% stall while its own cgroup read 0.00 at 33%
+// of memory.max, so every combo request was shed with 503 resource_pressure.
+describe("PSI source scoping", () => {
+  const MOUNTINFO = [
+    "/proc/self/mountinfo",
+    "43 34 0:35 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n",
+  ];
+  const CGROUP = ["/proc/self/cgroup", "0::/slice/service\n"];
+  const HOST_PSI = [
+    "/proc/pressure/memory",
+    "some avg10=93.94 avg60=92.91 avg300=93.53 total=1\nfull avg10=77.54 avg60=77.39 avg300=79.54 total=1\n",
+  ];
+  const CG_PSI = [
+    "/sys/fs/cgroup/slice/service/memory.pressure",
+    "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
+  ];
+  const base = [
+    CGROUP,
+    MOUNTINFO,
+    ["/sys/fs/cgroup/slice/service/memory.current", `${800 * MiB}\n`],
+    ["/sys/fs/cgroup/slice/service/memory.max", `${4 * GiB}\n`],
+  ] as const;
+
+  const sample = (extra: ReadonlyArray<readonly [string, string]>) =>
+    sampleResourceSignals({
+      nowMs: () => 42,
+      memoryUsage: () => memoryUsage(250 * MiB),
+      heapStatistics: () => ({ heap_size_limit: GiB, used_heap_size: 250 * MiB }),
+      fs: mapFs([...(base as unknown as Array<readonly [string, string]>), ...extra]),
+    });
+
+  it("prefers the container's own PSI over the host file", async () => {
+    const signals = await sample([CG_PSI, HOST_PSI]);
+    assert.equal(signals.psi?.someAvg10, 0);
+    assert.equal(signals.psi?.psiSource, "cgroup", "must not inherit the host's stall");
+  });
+
+  it("falls back to host PSI when the cgroup file is absent", async () => {
+    const signals = await sample([HOST_PSI]);
+    assert.equal(signals.psi?.someAvg10, 93.94);
+    assert.equal(signals.psi?.psiSource, "host", "bare metal keeps working");
+  });
+});
