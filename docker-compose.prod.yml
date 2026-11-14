@@ -32,11 +32,15 @@ services:
       - "127.0.0.1:${PROD_LIVE_WS_PORT:-20132}:${LIVE_WS_PORT:-20132}"
     volumes:
       - omniroute-prod-data:/app/data
-    # 4g hard cap with a 2304 MiB V8 old-space ceiling (OMNIROUTE_MEMORY_MB in
-    # the prod .env). The gap above 2304 MiB absorbs native/buffer memory that
-    # lives outside the V8 heap; without it the OOM killer fired before V8's own
-    # shed threshold could act. mem_swappiness keeps reclaim in RAM.
-    mem_limit: 4g
+    # 3328m (3.25 GiB) hard cap against the 2304 MiB V8 old-space ceiling
+    # (OMNIROUTE_MEMORY_MB in the prod .env), i.e. a full 1024 MiB of headroom
+    # for native/buffer memory that lives outside the V8 heap. Was 4g until
+    # 2026-11-14: the sum of container caps across the host (4 + 4.5 + 0.768 =
+    # 9.27 GiB on an 11.68 GiB box) left no room to absorb a simultaneous worst
+    # case. mem_reservation keeps the scheduling floor below the hard cap.
+    # mem_swappiness keeps reclaim in RAM.
+    mem_limit: 3328m
+    mem_reservation: 2816m
     mem_swappiness: 10
     logging:
       driver: json-file
